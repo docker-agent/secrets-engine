@@ -42,10 +42,14 @@ docker pass set POSTGRES_PASSWORD=my-secret-password --metadata owner=alice --me
 
 ### Or pass a JSON payload with secret and metadata via STDIN:
 echo '{"secret":"my-secret-password","metadata":{"owner":"alice"}}' | docker pass set POSTGRES_PASSWORD
+
+### Overwrite an existing secret:
+docker pass set POSTGRES_PASSWORD=new-secret-password --force
 `
 
 type setOpts struct {
 	metadata []string // raw "key=value" strings from --metadata flag
+	force    bool     // if true, overwrite existing secret instead of erroring
 }
 
 type stdinPayload struct {
@@ -59,8 +63,16 @@ func SetCommand(kc store.Store) *cobra.Command {
 		Use:     "set id[=value]",
 		Aliases: []string{"store", "save"},
 		Short:   "Set a secret",
-		Long: `Stores a secret in the local OS keychain. The secret value can be
-provided inline (NAME=VALUE) or piped via STDIN.`,
+		Long: `Stores a secret in the local OS keychain. The secret value can be provided inline (NAME=VALUE) or piped via STDIN.
+
+Behavior when a secret with the same id already exists is platform-dependent:
+  - macOS (Keychain): the command fails with a duplicate-item error.
+  - Linux (Secret Service) and Windows (Credential Manager): the existing
+    value is silently overwritten.
+
+Pass --force to overwrite an existing secret. On Linux and Windows the
+replacement is performed atomically. On macOS the Keychain API requires
+a delete-then-add sequence.`,
 		Example: strings.Trim(setExample, "\n"),
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -106,11 +118,15 @@ provided inline (NAME=VALUE) or piped via STDIN.`,
 					return err
 				}
 			}
+			if opts.force {
+				return kc.Upsert(cmd.Context(), id, pv)
+			}
 			return kc.Save(cmd.Context(), id, pv)
 		},
 	}
 	flags := cmd.Flags()
 	flags.StringArrayVar(&opts.metadata, "metadata", nil, "Non-sensitive key=value metadata (repeatable)")
+	flags.BoolVarP(&opts.force, "force", "f", false, "Overwrite existing secret if it already exists")
 	return cmd
 }
 
