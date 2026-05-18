@@ -135,6 +135,33 @@ func Test_rootCommand(t *testing.T) {
 			assert.ErrorIs(t, err, errInvalidID)
 			assert.Equal(t, "Error: "+errInvalidID.Error()+"\n", out)
 		})
+		t.Run("--force overwrites existing secret", func(t *testing.T) {
+			// Make Save return an error so the test fails if --force does not
+			// route the call through Upsert.
+			mock := teststore.NewMockStore(
+				teststore.WithStore(map[store.ID]store.Secret{
+					store.MustParseID("foo"): pass.NewPassValue([]byte("old")),
+				}),
+				teststore.WithStoreSaveErr(errors.New("save should not be called when --force is set")),
+			)
+			out, err := executeCommand(Root(t.Context(), mock, mockInfo), "set", "foo=new", "--force")
+			assert.NoError(t, err)
+			assert.Empty(t, out)
+			s, err := mock.Get(t.Context(), secrets.MustParseID("foo"))
+			require.NoError(t, err)
+			impl, ok := s.(*pass.PassValue)
+			require.True(t, ok)
+			v, err := impl.Marshal()
+			require.NoError(t, err)
+			assert.Equal(t, "new", string(v))
+		})
+		t.Run("--force surfaces upsert error", func(t *testing.T) {
+			errUpsert := errors.New("upsert error")
+			mock := teststore.NewMockStore(teststore.WithStoreUpsertErr(errUpsert))
+			out, err := executeCommand(Root(t.Context(), mock, mockInfo), "set", "foo=bar", "--force")
+			assert.ErrorIs(t, errUpsert, err)
+			assert.Equal(t, "Error: "+errUpsert.Error()+"\n", out)
+		})
 	})
 	t.Run("list", func(t *testing.T) {
 		t.Run("ok", func(t *testing.T) {
