@@ -16,6 +16,7 @@ package pass
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 
@@ -181,9 +182,27 @@ func withOTEL(runE func(cmd *cobra.Command, args []string) error) func(*cobra.Co
 			trace.WithSpanKind(trace.SpanKindInternal),
 			trace.WithAttributes(attribute.String("command", cmd.Name())),
 		)
+
+		pendingExit := -1
+		defer func() {
+			if pendingExit >= 0 {
+				os.Exit(pendingExit)
+			}
+		}()
 		defer span.End()
+
 		cmd.SetContext(ctx)
 		err := runE(cmd, args)
+
+		var exitErr *commands.ExitCodeError
+		if errors.As(err, &exitErr) {
+			pendingExit = exitErr.Code
+			span.SetAttributes(attribute.Int("command.child_exit_code", exitErr.Code))
+			span.SetStatus(codes.Ok, "child exited")
+			calledMetric(ctx, cmd, nil)
+			return nil
+		}
+
 		calledMetric(ctx, cmd, err)
 		if err != nil {
 			span.RecordError(err)

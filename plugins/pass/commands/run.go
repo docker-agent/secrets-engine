@@ -32,6 +32,19 @@ import (
 
 const sePrefix = "se://"
 
+// ExitCodeError is returned from RunCommand when the executed child process
+// terminated with a non-zero status. It carries the exit code the wrapper
+// should exit with. Returning this instead of calling os.Exit directly lets
+// the surrounding OTel span wrapper finish recording metrics and span data
+// before the process exits.
+type ExitCodeError struct {
+	Code int
+}
+
+func (e *ExitCodeError) Error() string {
+	return fmt.Sprintf("child exited with code %d", e.Code)
+}
+
 const runExample = `
 ### Run a command with one secret in its environment:
 SE_TOKEN=se://gh-token docker pass run -- gh repo list
@@ -106,7 +119,7 @@ started and exits non-zero.`,
 			if waitErr != nil {
 				var exitErr *exec.ExitError
 				if errors.As(waitErr, &exitErr) {
-					os.Exit(childExitCode(exitErr.ProcessState))
+					return &ExitCodeError{Code: childExitCode(exitErr.ProcessState)}
 				}
 				return waitErr
 			}

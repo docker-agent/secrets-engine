@@ -87,7 +87,12 @@ func runAsWrapper() {
 	cmd.SetContext(context.Background())
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
-	if err := cmd.Execute(); err != nil {
+	err = cmd.Execute()
+	var exitErr *ExitCodeError
+	if errors.As(err, &exitErr) {
+		os.Exit(exitErr.Code)
+	}
+	if err != nil {
 		os.Exit(2)
 	}
 	os.Exit(0)
