@@ -77,12 +77,17 @@ started and exits non-zero.`,
 			child.Stdout = os.Stdout
 			child.Stderr = os.Stderr
 
-			if err := child.Start(); err != nil {
-				return err
-			}
-
+			// Install the signal handler before Start so a signal arriving in
+			// the window between fork and the forwarder goroutine cannot kill
+			// the parent and orphan the child.
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, forwardableSignals()...)
+			defer signal.Stop(sigCh)
+
+			if err := child.Start(); err != nil {
+				return fmt.Errorf("starting child: %w", err)
+			}
+
 			done := make(chan struct{})
 			go func() {
 				for {
@@ -96,7 +101,6 @@ started and exits non-zero.`,
 			}()
 
 			waitErr := child.Wait()
-			signal.Stop(sigCh)
 			close(done)
 
 			if waitErr != nil {
