@@ -16,6 +16,7 @@ package pass
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"os"
 	"strings"
@@ -49,82 +50,22 @@ Examples:
 {{.Example}}{{end}}
 `
 
-const rootExample = `
-### Using keychain secrets in containers
-
-Create a secret:
-
-` + "```" + `console
-$ docker pass set GH_TOKEN=123456789
-` + "```" + `
-
-Create a secret from STDIN:
-
-` + "```" + `console
-echo "my_val" | docker pass set GH_TOKEN
-` + "```" + `
-
-Run a container that uses the secret:
-
-` + "```" + `console
-$ docker run -e GH_TOKEN= -dt --name demo busybox
-` + "```" + `
-
-Inspect the secret from inside the container:
-
-` + "```" + `console
-$ docker exec demo sh -c 'echo $GH_TOKEN'
-123456789
-` + "```" + `
-
-Explicitly assign a secret to a different environment variable:
-
-` + "```" + `console
-$ docker run -e GITHUB_TOKEN=se://GH_TOKEN -dt --name demo busybox
-` + "```" + `
-
-### Using keychain secrets in Compose
-
-Store the secrets:
-
-` + "```" + `console
-$ docker pass set myapp/anthropic/api-key=sk-ant-...
-$ docker pass set myapp/postgres/password=s3cr3t
-` + "```" + `
-
-` + "```" + `yaml
-services:
-  api:
-    image: service1
-    environment:
-      - ANTHROPIC_API_KEY=se://myapp/anthropic/api-key
-      - POSTGRES_PASSWORD=se://myapp/postgres/password
-
-  worker:
-    image: service2
-    command: worker
-    environment:
-      - ANTHROPIC_API_KEY=se://myapp/anthropic/api-key
-
-  db:
-    image: postgres:17
-    environment:
-      - POSTGRES_PASSWORD=se://myapp/postgres/password
-` + "```"
+//go:embed examples.md
+var rootExample string
 
 // Root returns the root command for the docker-pass CLI plugin
 func Root(ctx context.Context, s store.Store, info commands.VersionInfo) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pass set|get|ls|rm|run",
 		Short: "Manage your local OS keychain secrets.",
-		Long: `Docker Pass is a helper for securely storing secrets in your local OS keychain and injecting them into containers when needed. 
-It uses platform-specific credential storage:
-
-  - Windows: Windows Credential Manager API
-  - macOS:   Keychain services API
-  - Linux:   org.freedesktop.secrets API (requires DBus + gnome-keyring or kdewallet)
-
-Secrets can be injected into running containers at runtime using the se:// URI scheme.`,
+		Long: "Docker Pass is a helper for securely storing secrets in your local OS keychain and injecting them into containers when needed.\n" +
+			"It uses platform-specific credential storage:\n" +
+			"\n" +
+			"  - Windows: Windows Credential Manager API\n" +
+			"  - macOS:   Keychain services API\n" +
+			"  - Linux:   `org.freedesktop.secrets` API (requires DBus + `gnome-keyring` or `kdewallet`)\n" +
+			"\n" +
+			"Secrets can be injected into running containers at runtime using the `se://` URI scheme.",
 		Example:          strings.TrimSpace(rootExample),
 		SilenceUsage:     true,
 		TraverseChildren: true,
