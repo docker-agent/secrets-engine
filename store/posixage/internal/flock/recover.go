@@ -24,10 +24,13 @@ import (
 var errRecoverLock = errors.New("recovery failed. lock file is not older than 30 seconds")
 
 // staleThreshold is the modtime age past which a lock file is considered
-// abandoned. Successful lock acquisition refreshes the modtime via
-// [os.File.Truncate], so a still-held lock will not be misidentified as
-// stale unless the holder is genuinely stuck for longer than this window.
-const staleThreshold = 30 * time.Second
+// abandoned. A holder refreshes the modtime at acquisition and again on
+// every [heartbeatInterval] tick via [heartbeat], so a still-held lock
+// will not be misidentified as stale unless the holder is genuinely
+// stuck (no scheduler progress) for longer than this window.
+//
+// Exposed as a var rather than a const so tests can shorten it.
+var staleThreshold = 30 * time.Second
 
 // recoverStaleLock attempts to clear a stale lock file at the configured
 // lock-file path.

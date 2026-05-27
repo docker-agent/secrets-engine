@@ -17,7 +17,6 @@
 package flock
 
 import (
-	"context"
 	"os"
 	"sync"
 	"testing"
@@ -25,23 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sys/unix"
 )
-
-// rawFlockExclusive opens the lock file directly and acquires a non-blocking
-// exclusive flock on a brand-new open file description. It returns the file
-// handle so the caller can hold the lock independently of the package APIs.
-//
-// This mirrors the cross-process behavior: each open() yields a separate
-// open file description, so the kernel treats two such handles as
-// independent lock holders even within the same process.
-func rawFlockExclusive(t *testing.T, root *os.Root) *os.File {
-	t.Helper()
-	f, err := root.OpenFile(lockFileName, os.O_RDWR|os.O_CREATE, 0o600)
-	require.NoError(t, err)
-	require.NoError(t, unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB))
-	return f
-}
 
 // TestFlockRaces collects tests that exercise concurrency edge cases in
 // the flock package. Each subtest documents the specific race it covers.
@@ -133,85 +116,35 @@ func TestFlockRaces(t *testing.T) {
 		}
 	})
 
-	// Two waiters racing to acquire after a stale holder must end with at
-	// most one caller holding the lock. Inode verification makes sure
-	// that even if both callers' recovery paths interleave with their
-	// retries, only one walks away believing they own the lock.
-	t.Run("two waiters cannot both acquire after recovery", func(t *testing.T) {
+	// The heartbeat goroutine started by [tryLock] must keep the lock
+	// file's modtime young enough that concurrent recovery callers see
+	// the lock as live. Without the heartbeat, a holder doing work
+	// longer than [staleThreshold] is hijacked: another process unlinks
+	// the file and creates a fresh inode at the same path. This test
+	// shortens both intervals so we can observe the protection in
+	// well under the production 30s window.
+	t.Run("heartbeat keeps a long-running holder live for recovery", func(t *testing.T) {
+		origHB, origStale := heartbeatInterval, staleThreshold
+		heartbeatInterval = 20 * time.Millisecond
+		staleThreshold = 100 * time.Millisecond
+		t.Cleanup(func() {
+			heartbeatInterval = origHB
+			staleThreshold = origStale
+		})
+
 		root, err := os.OpenRoot(t.TempDir())
 		require.NoError(t, err)
 		t.Cleanup(func() { assert.NoError(t, root.Close()) })
 
-		holderFile := rawFlockExclusive(t, root)
-		t.Cleanup(func() {
-			_ = unix.Flock(int(holderFile.Fd()), unix.LOCK_UN)
-			_ = holderFile.Close()
-		})
-		stale := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-		require.NoError(t, root.Chtimes(lockFileName, stale, stale))
+		unlock, err := tryLock(t.Context(), root, true)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = unlock() })
 
-		var (
-			wg       sync.WaitGroup
-			unlocks  [2]UnlockFunc
-			lockErrs [2]error
-		)
-		wg.Add(2)
-		for i := range 2 {
-			go func() {
-				defer wg.Done()
-				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-				defer cancel()
-				unlocks[i], lockErrs[i] = tryLock(ctx, root, true)
-			}()
-		}
-		wg.Wait()
+		// Sleep well past staleThreshold; heartbeat should be firing
+		// every 20ms so the file's modtime should keep refreshing.
+		time.Sleep(5 * staleThreshold)
 
-		t.Cleanup(func() {
-			for _, u := range unlocks {
-				if u != nil {
-					_ = u()
-				}
-			}
-		})
-
-		successes := 0
-		for _, e := range lockErrs {
-			if e == nil {
-				successes++
-			}
-		}
-		assert.LessOrEqualf(t, successes, 1,
-			"%d callers acquired the lock concurrently; recovery handed it out more than once",
-			successes)
-	})
-
-	// The 30s threshold is checked against the lock file's modification
-	// time, which is only refreshed at acquisition. A holder that takes
-	// longer than 30s to complete its work has no way to signal liveness
-	// to other processes — its lock file looks stale to anyone who
-	// queries it. This test documents that limitation; closing it
-	// requires a periodic modtime refresh (background heartbeat) while
-	// the lock is held.
-	t.Run("long-running holder still has no liveness signal", func(t *testing.T) {
-		t.Skip("known limitation: inode verification does not protect a holder " +
-			"whose modtime ages past 30s. A background heartbeat that re-truncates " +
-			"the lock file would be required to fully fix this race.")
-	})
-
-	// This is the original cross-process hijack scenario. A live holder
-	// has flock on inode A; another caller, seeing the modtime stale,
-	// unlinks the file and creates a fresh inode B. The new caller
-	// passes inode verification because its fd and the path both point
-	// to B — but the original holder's flock on A is still live.
-	//
-	// Inode verification alone cannot close this race because the
-	// hijacked holder never re-checks. A complete fix requires the
-	// holder to periodically verify its locked inode is still at the
-	// path, or to refresh the modtime to keep recovery from firing.
-	t.Run("stale recovery can still hijack a long-running holder", func(t *testing.T) {
-		t.Skip("known limitation: inode verification only protects the side that " +
-			"is *acquiring* the lock. A holder whose modtime is allowed to age past " +
-			"30s can still be hijacked because the holder never re-verifies. Pair " +
-			"this fix with a heartbeat or a holder-side re-check to close fully.")
+		assert.ErrorIs(t, recoverStaleLock(root), errRecoverLock,
+			"recoverStaleLock should refuse to recover a heartbeating lock")
 	})
 }

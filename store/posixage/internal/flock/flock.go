@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -41,6 +42,15 @@ const (
 	lockFileName = ".posixage.lock"
 )
 
+// heartbeatInterval is how often the [heartbeat] goroutine refreshes the
+// lock file's modtime while a caller holds the lock. It must be well
+// below [staleThreshold] so that a holder which misses a tick or two
+// (GC pause, brief scheduler starvation) still appears live to concurrent
+// recovery callers.
+//
+// Exposed as a var rather than a const so tests can shorten it.
+var heartbeatInterval = 10 * time.Second
+
 // UnlockFunc is the callback function returned by [TryLock] and [TryRLock]
 // it should always be called inside a defer.
 type UnlockFunc func() error
@@ -60,7 +70,7 @@ func openFile(root *os.Root) (*os.File, error) {
 // acquireOnce performs a single lock acquisition attempt and verifies the
 // resulting lock is on the file currently at the lock-file path.
 //
-// The sequence is open -> flock -> compare-inodes -> truncate. If any step
+// The sequence is open -> flock -> truncate -> compare-inodes. If any step
 // fails the function releases the flock (when held) and closes the fd
 // before returning. The returned [os.File] is the locked descriptor; the
 // caller is responsible for unlocking and closing it.
@@ -81,6 +91,13 @@ func acquireOnce(root *os.Root, exclusive bool) (*os.File, error) {
 		return nil, err
 	}
 
+	// Truncate first so the modtime refresh is visible to any concurrent
+	// recovery caller before we check the inode. Doing it the other way
+	// round leaves a window where a passing inode check is followed by an
+	// unlink before truncate, and the caller walks away with a lock on an
+	// already-orphaned inode.
+	_ = fl.Truncate(0)
+
 	same, err := isCurrentLockFile(fl, root)
 	if err != nil {
 		_ = releaseLock(fl)
@@ -92,10 +109,6 @@ func acquireOnce(root *os.Root, exclusive bool) (*os.File, error) {
 		_ = fl.Close()
 		return nil, errStaleInode
 	}
-
-	// truncate to update the modtime to signal to other processes that the
-	// current lock is valid so they don't attempt a recovery on it.
-	_ = fl.Truncate(0)
 	return fl, nil
 }
 
@@ -120,9 +133,7 @@ func isCurrentLockFile(fl *os.File, root *os.Root) (bool, error) {
 func tryLock(ctx context.Context, root *os.Root, exclusive bool) (UnlockFunc, error) {
 	fl, err := acquireOnce(root, exclusive)
 	if err == nil {
-		return sync.OnceValue(func() error {
-			return unlockFile(fl)
-		}), nil
+		return startHeartbeat(fl, root), nil
 	}
 	firstErr := errors.Join(ErrLockUnsuccessful, err)
 
@@ -138,9 +149,65 @@ func tryLock(ctx context.Context, root *os.Root, exclusive bool) (UnlockFunc, er
 	if err != nil {
 		return nil, err
 	}
+	return startHeartbeat(fl, root), nil
+}
+
+// startHeartbeat launches the modtime-refresh goroutine for a locked file
+// and returns an [UnlockFunc] that stops the goroutine, waits for it to
+// exit, and then unlocks/closes the file. The wait ensures the goroutine
+// never touches the fd after [unlockFile] closes it.
+func startHeartbeat(fl *os.File, root *os.Root) UnlockFunc {
+	hbCtx, stop := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		heartbeat(hbCtx, fl, root)
+	}()
 	return sync.OnceValue(func() error {
+		stop()
+		<-done
 		return unlockFile(fl)
-	}), nil
+	})
+}
+
+// heartbeat re-truncates the locked file every [heartbeatInterval] so its
+// modtime stays younger than [staleThreshold] for the lifetime of the
+// lock. Without this, a holder doing work that exceeds [staleThreshold]
+// would be misclassified as stale by concurrent callers, which would
+// unlink the lock file and let a fresh inode be created at the same path
+// — the holder-side half of the ghost-lock race.
+//
+// Each tick also re-verifies the locked descriptor still refers to the
+// file at the lock-file path. A mismatch means we have been hijacked
+// (heartbeat starved past [staleThreshold] long enough for recovery to
+// fire). There is no in-band way to fail the caller's outstanding
+// operation, so the mismatch is logged via [slog] and the goroutine
+// keeps running — surfacing the hijack is the best we can do.
+//
+// The goroutine returns when ctx is canceled by [startHeartbeat]'s
+// returned [UnlockFunc].
+func heartbeat(ctx context.Context, fl *os.File, root *os.Root) {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := fl.Truncate(0); err != nil {
+				slog.Warn("flock heartbeat: truncate failed", "err", err)
+				continue
+			}
+			same, err := isCurrentLockFile(fl, root)
+			if err != nil {
+				slog.Warn("flock heartbeat: inode verify failed", "err", err)
+				continue
+			}
+			if !same {
+				slog.Warn("flock heartbeat: lock file inode changed under us; lock has likely been hijacked")
+			}
+		}
+	}
 }
 
 // retryLock loops [acquireOnce] with exponential backoff until ctx is
@@ -168,9 +235,11 @@ func retryLock(ctx context.Context, root *os.Root, exclusive bool) (*os.File, er
 // lock is acquired.
 //
 // As a safeguard, the function attempts to recover from stale locks,
-// defined as lock files older than 30s. Stale lock recovery is skipped when
-// ctx has been canceled. If recovery fails, manual intervention may be
-// required.
+// defined as lock files older than 30s. While the lock is held, a
+// background goroutine refreshes the lock file's modtime every 10s so
+// long-running operations are not misclassified as stale. Stale lock
+// recovery is skipped when ctx has been canceled. If recovery fails,
+// manual intervention may be required.
 //
 // It returns an unlock function that must be called to release the lock.
 func TryLock(ctx context.Context, root *os.Root) (UnlockFunc, error) {
@@ -184,9 +253,11 @@ func TryLock(ctx context.Context, root *os.Root) (UnlockFunc, error) {
 // lock is acquired.
 //
 // As a safeguard, the function attempts to recover from stale locks,
-// defined as lock files older than 30s. Stale lock recovery is skipped when
-// ctx has been canceled. If recovery fails, manual intervention may be
-// required.
+// defined as lock files older than 30s. While the lock is held, a
+// background goroutine refreshes the lock file's modtime every 10s so
+// long-running operations are not misclassified as stale. Stale lock
+// recovery is skipped when ctx has been canceled. If recovery fails,
+// manual intervention may be required.
 //
 // It returns an unlock function that must be called to release the lock.
 func TryRLock(ctx context.Context, root *os.Root) (UnlockFunc, error) {
