@@ -52,6 +52,9 @@ func (e *ExitCodeError) Error() string {
 //go:embed run_example.md
 var runExample string
 
+//go:embed run_long.md
+var runLong string
+
 type runOpts struct {
 	envFiles []string
 }
@@ -59,17 +62,9 @@ type runOpts struct {
 func RunCommand() *cobra.Command {
 	opts := runOpts{}
 	cmd := &cobra.Command{
-		Use:   "run -- CMD [ARGS...]",
-		Short: "Run a command with `se://` environment references resolved.",
-		Long: "Scans the current environment (plus any `--env-file` inputs) for variables\n" +
-			"whose value is exactly `se://<ID|pattern>`. Each reference is resolved through the\n" +
-			"secrets-engine daemon and the resolved value is passed to the child process.\n" +
-			"The child inherits stdin, stdout, and stderr.\n" +
-			"\n" +
-			"Requires the secrets-engine daemon (Docker Desktop) to be running.\n" +
-			"\n" +
-			"If any reference cannot be resolved, the command fails before the child is\n" +
-			"started and exits non-zero.",
+		Use:     "run -- CMD [ARGS...]",
+		Short:   "Run a command with `se://` environment references resolved.",
+		Long:    strings.Trim(runLong, "\n"),
 		Example: strings.Trim(runExample, "\n"),
 		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
