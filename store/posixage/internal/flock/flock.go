@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
+
 	"github.com/docker/secrets-engine/x/logging"
 )
 
