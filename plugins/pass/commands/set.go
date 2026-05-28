@@ -33,6 +33,9 @@ import (
 //go:embed set_example.md
 var setExample string
 
+//go:embed set_long.md
+var setLong string
+
 type setOpts struct {
 	metadata []string // raw "key=value" strings from --metadata flag
 	force    bool     // if true, overwrite existing secret instead of erroring
@@ -49,16 +52,7 @@ func SetCommand(kc store.Store) *cobra.Command {
 		Use:     "set id[=value]",
 		Aliases: []string{"store", "save"},
 		Short:   "Set a secret",
-		Long: "Stores a secret in the local OS keychain. The secret value can be provided inline (`NAME=VALUE`) or piped via STDIN.\n" +
-			"\n" +
-			"Behavior when a secret with the same id already exists is platform-dependent:\n" +
-			"  - macOS (Keychain): the command fails with a duplicate-item error.\n" +
-			"  - Linux (Secret Service) and Windows (Credential Manager): the existing\n" +
-			"    value is silently overwritten.\n" +
-			"\n" +
-			"Pass `--force` to overwrite an existing secret. On Linux and Windows the\n" +
-			"replacement is performed atomically. On macOS the Keychain API requires\n" +
-			"a delete-then-add sequence.",
+		Long:    strings.Trim(setLong, "\n"),
 		Example: strings.Trim(setExample, "\n"),
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

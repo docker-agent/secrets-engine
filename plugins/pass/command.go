@@ -53,19 +53,15 @@ Examples:
 //go:embed examples.md
 var rootExample string
 
+//go:embed long.md
+var rootLong string
+
 // Root returns the root command for the docker-pass CLI plugin
 func Root(ctx context.Context, s store.Store, info commands.VersionInfo) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "pass set|get|ls|rm|run",
-		Short: "Manage your local OS keychain secrets.",
-		Long: "Docker Pass is a helper for securely storing secrets in your local OS keychain and injecting them into containers when needed.\n" +
-			"It uses platform-specific credential storage:\n" +
-			"\n" +
-			"  - Windows: Windows Credential Manager API\n" +
-			"  - macOS:   Keychain services API\n" +
-			"  - Linux:   `org.freedesktop.secrets` API (requires DBus + `gnome-keyring` or `kdewallet`)\n" +
-			"\n" +
-			"Secrets can be injected into running containers at runtime using the `se://` URI scheme.",
+		Use:              "pass set|get|ls|rm|run",
+		Short:            "Manage your local OS keychain secrets.",
+		Long:             strings.TrimSpace(rootLong),
 		Example:          strings.TrimSpace(rootExample),
 		SilenceUsage:     true,
 		TraverseChildren: true,
