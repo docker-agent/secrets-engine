@@ -18,13 +18,34 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"log/slog"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
+	"github.com/docker/secrets-engine/x/logging"
 )
+
+// noopLogger discards every record. It is the [logging.Logger]
+// implementation used when no logger is provided in the context passed
+// to [TryLock] or [TryRLock], so the package never writes to the
+// caller's stderr unsolicited.
+type noopLogger struct{}
+
+func (noopLogger) Printf(string, ...any) {}
+func (noopLogger) Warnf(string, ...any)  {}
+func (noopLogger) Errorf(string, ...any) {}
+
+// loggerFromCtx returns the [logging.Logger] stored on ctx by
+// [logging.WithLogger], or a [noopLogger] when none is set. The library
+// must never log to a default sink — silence is the safe default for a
+// dependency.
+func loggerFromCtx(ctx context.Context) logging.Logger {
+	if l, err := logging.FromContext(ctx); err == nil {
+		return l
+	}
+	return noopLogger{}
+}
 
 var (
 	ErrLockUnsuccessful   = errors.New("store is locked")
@@ -144,9 +165,10 @@ func isCurrentLockFile(fl *os.File, root *os.Root) (bool, error) {
 }
 
 func tryLock(ctx context.Context, root *os.Root, exclusive bool) (UnlockFunc, error) {
+	logger := loggerFromCtx(ctx)
 	fl, err := acquireOnce(root, exclusive)
 	if err == nil {
-		return startHeartbeat(fl, root), nil
+		return startHeartbeat(fl, root, logger), nil
 	}
 	firstErr := errors.Join(ErrLockUnsuccessful, err)
 
@@ -162,19 +184,23 @@ func tryLock(ctx context.Context, root *os.Root, exclusive bool) (UnlockFunc, er
 	if err != nil {
 		return nil, err
 	}
-	return startHeartbeat(fl, root), nil
+	return startHeartbeat(fl, root, logger), nil
 }
 
 // startHeartbeat launches the modtime-refresh goroutine for a locked file
 // and returns an [UnlockFunc] that stops the goroutine, waits for it to
 // exit, and then unlocks/closes the file. The wait ensures the goroutine
 // never touches the fd after [unlockFile] closes it.
-func startHeartbeat(fl *os.File, root *os.Root) UnlockFunc {
+//
+// The supplied logger is used by the goroutine to surface truncate
+// failures and inode-mismatch hijacks. A [noopLogger] is acceptable when
+// the caller has no logging plumbed.
+func startHeartbeat(fl *os.File, root *os.Root, logger logging.Logger) UnlockFunc {
 	hbCtx, stop := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		heartbeat(hbCtx, fl, root)
+		heartbeat(hbCtx, fl, root, logger)
 	}()
 	return sync.OnceValue(func() error {
 		stop()
@@ -194,12 +220,13 @@ func startHeartbeat(fl *os.File, root *os.Root) UnlockFunc {
 // file at the lock-file path. A mismatch means we have been hijacked
 // (heartbeat starved past [staleThreshold] long enough for recovery to
 // fire). There is no in-band way to fail the caller's outstanding
-// operation, so the mismatch is logged via [slog] and the goroutine
-// keeps running — surfacing the hijack is the best we can do.
+// operation, so the mismatch is logged via the supplied [logging.Logger]
+// and the goroutine keeps running — surfacing the hijack is the best we
+// can do.
 //
 // The goroutine returns when ctx is canceled by [startHeartbeat]'s
 // returned [UnlockFunc].
-func heartbeat(ctx context.Context, fl *os.File, root *os.Root) {
+func heartbeat(ctx context.Context, fl *os.File, root *os.Root, logger logging.Logger) {
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 	for {
@@ -208,16 +235,16 @@ func heartbeat(ctx context.Context, fl *os.File, root *os.Root) {
 			return
 		case <-ticker.C:
 			if err := fl.Truncate(0); err != nil {
-				slog.Warn("flock heartbeat: truncate failed", "err", err)
+				logger.Warnf("flock heartbeat: truncate failed: %v", err)
 				continue
 			}
 			same, err := isCurrentLockFile(fl, root)
 			if err != nil {
-				slog.Warn("flock heartbeat: inode verify failed", "err", err)
+				logger.Warnf("flock heartbeat: inode verify failed: %v", err)
 				continue
 			}
 			if !same {
-				slog.Warn("flock heartbeat: lock file inode changed under us; lock has likely been hijacked")
+				logger.Warnf("flock heartbeat: lock file inode changed under us; lock has likely been hijacked")
 			}
 		}
 	}
@@ -254,10 +281,16 @@ func retryLock(ctx context.Context, root *os.Root, exclusive bool) (*os.File, er
 // recovery is skipped when ctx has been canceled. If recovery fails,
 // manual intervention may be required.
 //
+// The heartbeat goroutine surfaces truncate failures and hijack
+// detections through the [logging.Logger] stored on ctx via
+// [logging.WithLogger]. When no logger is set, those events are dropped
+// silently — the package never writes to a default sink.
+//
 // On success, the returned [UnlockFunc] MUST be called exactly once to
 // release the lock, close the file descriptor, and stop the heartbeat
 // goroutine. The idiomatic pattern is to defer it immediately:
 //
+//	ctx = logging.WithLogger(ctx, myLogger) // optional
 //	unlock, err := flock.TryLock(ctx, root)
 //	if err != nil {
 //	    return err
@@ -284,10 +317,16 @@ func TryLock(ctx context.Context, root *os.Root) (UnlockFunc, error) {
 // recovery is skipped when ctx has been canceled. If recovery fails,
 // manual intervention may be required.
 //
+// The heartbeat goroutine surfaces truncate failures and hijack
+// detections through the [logging.Logger] stored on ctx via
+// [logging.WithLogger]. When no logger is set, those events are dropped
+// silently — the package never writes to a default sink.
+//
 // On success, the returned [UnlockFunc] MUST be called exactly once to
 // release the lock, close the file descriptor, and stop the heartbeat
 // goroutine. The idiomatic pattern is to defer it immediately:
 //
+//	ctx = logging.WithLogger(ctx, myLogger) // optional
 //	unlock, err := flock.TryRLock(ctx, root)
 //	if err != nil {
 //	    return err
