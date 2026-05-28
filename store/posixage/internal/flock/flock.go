@@ -51,8 +51,21 @@ const (
 // Exposed as a var rather than a const so tests can shorten it.
 var heartbeatInterval = 10 * time.Second
 
-// UnlockFunc is the callback function returned by [TryLock] and [TryRLock]
-// it should always be called inside a defer.
+// UnlockFunc is the callback returned by [TryLock] and [TryRLock]. It
+// releases the advisory lock, closes the underlying file descriptor, and
+// stops the background heartbeat goroutine that refreshes the lock
+// file's modtime.
+//
+// Callers MUST invoke this function exactly once, typically via defer
+// immediately after a successful lock acquisition. Failing to call it
+// leaks both the file descriptor and the heartbeat goroutine for the
+// remaining lifetime of the process — the goroutine has no other
+// termination signal. Calling it more than once is safe and idempotent;
+// only the first call performs the release.
+//
+// The returned error reflects the unlock/close step only. The heartbeat
+// goroutine is always stopped and joined before the unlock is attempted,
+// so the file descriptor is never touched after it has been closed.
 type UnlockFunc func() error
 
 // openFile is a helper function for internal use by [tryLock]
@@ -241,7 +254,19 @@ func retryLock(ctx context.Context, root *os.Root, exclusive bool) (*os.File, er
 // recovery is skipped when ctx has been canceled. If recovery fails,
 // manual intervention may be required.
 //
-// It returns an unlock function that must be called to release the lock.
+// On success, the returned [UnlockFunc] MUST be called exactly once to
+// release the lock, close the file descriptor, and stop the heartbeat
+// goroutine. The idiomatic pattern is to defer it immediately:
+//
+//	unlock, err := flock.TryLock(ctx, root)
+//	if err != nil {
+//	    return err
+//	}
+//	defer unlock()
+//
+// Failing to call the returned function leaks both the file descriptor
+// and the heartbeat goroutine for the remaining lifetime of the process.
+// See [UnlockFunc] for details.
 func TryLock(ctx context.Context, root *os.Root) (UnlockFunc, error) {
 	return tryLock(ctx, root, true)
 }
@@ -259,7 +284,19 @@ func TryLock(ctx context.Context, root *os.Root) (UnlockFunc, error) {
 // recovery is skipped when ctx has been canceled. If recovery fails,
 // manual intervention may be required.
 //
-// It returns an unlock function that must be called to release the lock.
+// On success, the returned [UnlockFunc] MUST be called exactly once to
+// release the lock, close the file descriptor, and stop the heartbeat
+// goroutine. The idiomatic pattern is to defer it immediately:
+//
+//	unlock, err := flock.TryRLock(ctx, root)
+//	if err != nil {
+//	    return err
+//	}
+//	defer unlock()
+//
+// Failing to call the returned function leaks both the file descriptor
+// and the heartbeat goroutine for the remaining lifetime of the process.
+// See [UnlockFunc] for details.
 func TryRLock(ctx context.Context, root *os.Root) (UnlockFunc, error) {
 	return tryLock(ctx, root, false)
 }
