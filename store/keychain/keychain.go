@@ -25,6 +25,24 @@ import (
 
 var _ store.Store = &keychainStore[store.Secret]{}
 
+// ErrNoDefaultCollection is returned when the secret service has no usable
+// default collection (no 'login' collection and no collection assigned to the
+// 'default' alias). This typically happens on headless hosts where the keyring
+// has not been initialized.
+//
+// NOTE: this condition is currently specific to the Linux keyring (the
+// freedesktop Secret Service). macOS and Windows have no equivalent "default
+// collection" concept, so the keychain store never returns this error on those
+// platforms. The sentinel is nonetheless declared here, in the cross-platform
+// file (rather than the Linux-specific one), so that platform-agnostic callers
+// can reference it on every platform without build tags. On non-Linux platforms
+// it simply never matches.
+//
+// It is exported so callers can use [errors.Is] to detect the absence of usable
+// keychain infrastructure and fall back gracefully, rather than relying on
+// fragile error message comparisons.
+var ErrNoDefaultCollection = errors.New("no default keychain collection available")
+
 type (
 	Option            interface{ apply(any) error }
 	optionFunc[K any] func(K) error
