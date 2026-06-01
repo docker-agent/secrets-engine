@@ -78,6 +78,20 @@ func NewService() (*SecretService, error) {
 	return &SecretService{conn: conn, signalCh: signalCh, sessionOpenTimeout: DefaultSessionOpenTimeout}, nil
 }
 
+// Close releases the underlying D-Bus connection and its socket file
+// descriptor. Each [NewService] call dials a private session-bus connection
+// (via dbus.ConnectSessionBus), so every service MUST be closed when it is no
+// longer needed; otherwise the connection — and its fd — leaks for the lifetime
+// of the process. Closing the connection also tears down the signal goroutine
+// that NewService starts. Close is safe to call on a service whose connection
+// is nil.
+func (s *SecretService) Close() error {
+	if s == nil || s.conn == nil {
+		return nil
+	}
+	return s.conn.Close()
+}
+
 // SetSessionOpenTimeout
 func (s *SecretService) SetSessionOpenTimeout(d time.Duration) {
 	s.sessionOpenTimeout = d
