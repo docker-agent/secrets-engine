@@ -150,6 +150,10 @@ func (k *keychainStore[T]) Delete(_ context.Context, id store.ID) error {
 	if err != nil {
 		return err
 	}
+	// NewService dials a fresh private session-bus connection; close it (and
+	// its socket fd) when we return. Deferred before CloseSession so that, by
+	// LIFO order, the session is closed first and the connection last.
+	defer func() { _ = service.Close() }()
 
 	session, err := service.OpenSession(kc.AuthenticationDHAES)
 	if err != nil {
@@ -193,6 +197,10 @@ func (k *keychainStore[T]) Get(ctx context.Context, id store.ID) (store.Secret, 
 	if err != nil {
 		return nil, err
 	}
+	// NewService dials a fresh private session-bus connection; close it (and
+	// its socket fd) when we return. Deferred before CloseSession so that, by
+	// LIFO order, the session is closed first and the connection last.
+	defer func() { _ = service.Close() }()
 
 	session, err := service.OpenSession(kc.AuthenticationDHAES)
 	if err != nil {
@@ -256,6 +264,10 @@ func (k *keychainStore[T]) GetAllMetadata(ctx context.Context) (map[store.ID]sto
 	if err != nil {
 		return nil, err
 	}
+	// NewService dials a fresh private session-bus connection; close it (and
+	// its socket fd) when we return. Deferred before CloseSession so that, by
+	// LIFO order, the session is closed first and the connection last.
+	defer func() { _ = service.Close() }()
 
 	session, err := service.OpenSession(kc.AuthenticationDHAES)
 	if err != nil {
@@ -324,6 +336,10 @@ func (k *keychainStore[T]) Save(_ context.Context, id store.ID, secret store.Sec
 	if err != nil {
 		return err
 	}
+	// NewService dials a fresh private session-bus connection; close it (and
+	// its socket fd) when we return. Deferred before CloseSession so that, by
+	// LIFO order, the session is closed first and the connection last.
+	defer func() { _ = service.Close() }()
 
 	session, err := service.OpenSession(kc.AuthenticationDHAES)
 	if err != nil {
@@ -401,6 +417,10 @@ func (k *keychainStore[T]) Filter(ctx context.Context, pattern store.Pattern) (m
 	if err != nil {
 		return nil, err
 	}
+	// NewService dials a fresh private session-bus connection; close it (and
+	// its socket fd) when we return. Deferred before CloseSession so that, by
+	// LIFO order, the session is closed first and the connection last.
+	defer func() { _ = service.Close() }()
 
 	session, err := service.OpenSession(kc.AuthenticationDHAES)
 	if err != nil {
