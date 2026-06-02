@@ -17,6 +17,7 @@
 package keychain
 
 import (
+	"sync/atomic"
 	"testing"
 
 	dbus "github.com/godbus/dbus/v5"
@@ -32,14 +33,15 @@ import (
 // deterministic and need no keyring on the host.
 //
 // It records how many connections were opened and closed so a test can assert
-// the store balances every open with a Close.
+// the store balances every open with a Close. The counters are atomic so the
+// fake is safe to share across concurrent operations.
 type fakeService struct {
 	// items is returned verbatim by SearchCollection; leave empty to drive the
 	// "credential not found" path.
 	items []dbus.ObjectPath
 
-	opened int
-	closed int
+	opened atomic.Int64
+	closed atomic.Int64
 }
 
 func (f *fakeService) Collections() ([]dbus.ObjectPath, error) {
@@ -55,6 +57,7 @@ func (f *fakeService) Unlock([]dbus.ObjectPath) error { return nil }
 func (f *fakeService) SearchCollection(dbus.ObjectPath, kc.Attributes) ([]dbus.ObjectPath, error) {
 	return f.items, nil
 }
+
 func (f *fakeService) CreateItem(dbus.ObjectPath, map[string]dbus.Variant, kc.Secret, kc.ReplaceBehavior) (dbus.ObjectPath, error) {
 	return "", nil
 }
@@ -62,7 +65,7 @@ func (f *fakeService) DeleteItem(dbus.ObjectPath) error                      { r
 func (f *fakeService) GetAttributes(dbus.ObjectPath) (kc.Attributes, error)  { return nil, nil }
 func (f *fakeService) GetSecret(dbus.ObjectPath, kc.Session) ([]byte, error) { return nil, nil }
 func (f *fakeService) Close() error {
-	f.closed++
+	f.closed.Add(1)
 	return nil
 }
 
@@ -73,7 +76,7 @@ func withFakeService(t *testing.T, fake *fakeService) {
 	orig := newService
 	t.Cleanup(func() { newService = orig })
 	newService = func() (secretService, error) {
-		fake.opened++
+		fake.opened.Add(1)
 		return fake, nil
 	}
 }
@@ -108,8 +111,9 @@ func TestKeychainClosesEveryConnection(t *testing.T) {
 		require.ErrorIs(t, err, store.ErrCredentialNotFound)
 	}
 
-	require.Equal(t, iterations, fake.opened)
-	assert.Equal(t, fake.opened, fake.closed, "every opened connection must be closed")
+	opened, closed := fake.opened.Load(), fake.closed.Load()
+	require.Equal(t, int64(iterations), opened)
+	assert.Equal(t, opened, closed, "every opened connection must be closed")
 }
 
 func TestResolveDefaultCollection(t *testing.T) {
