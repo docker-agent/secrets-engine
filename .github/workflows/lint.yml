@@ -20,6 +20,11 @@ jobs:
       id-token: write
       pull-requests: write
       contents: write
+    env:
+      # Docker Hub credentials and the Docker Build Cloud builder are only
+      # available to same-repo events. Fork PRs run without secrets, so they
+      # fall back to a local buildx builder (slower, no shared cache).
+      IS_TRUSTED: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -28,6 +33,7 @@ jobs:
         with:
           go-version-file: go.work
       - name: Hub login
+        if: env.IS_TRUSTED == 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: dockerpublicbot
@@ -36,8 +42,8 @@ jobs:
         id: buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
-          driver: cloud
-          endpoint: "docker/secrets-engine"
+          driver: ${{ env.IS_TRUSTED == 'true' && 'cloud' || 'docker-container' }}
+          endpoint: ${{ env.IS_TRUSTED == 'true' && 'docker/secrets-engine' || '' }}
           install: true
       - name: Lint
         run: make BUILDER=${{ steps.buildx.outputs.name }} ${{ matrix.target }}
