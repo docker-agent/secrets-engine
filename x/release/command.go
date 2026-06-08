@@ -327,6 +327,9 @@ func verifyReleaseRef(ctx context.Context) error {
 func remoteDefaultBranch(ctx context.Context) string {
 	out, err := runGit(ctx, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"warning: origin/HEAD is not set; assuming default branch is %q — "+
+				"run 'git remote set-head origin -a' if the real default differs\n", "main")
 		return "main"
 	}
 	return strings.TrimPrefix(strings.TrimSpace(out), "origin/")

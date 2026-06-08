@@ -42,6 +42,12 @@ func Test_verifyReleaseRef(t *testing.T) {
 	})
 
 	t.Run("passes again once the commit is pushed", func(t *testing.T) {
+		// Self-contained: put HEAD ahead of the remote, assert it fails, then
+		// push and assert it recovers — so the fail -> push -> pass sequence is
+		// exercised even when this subtest is run in isolation.
+		repo.commit(t, "chore: bump local/v0.0.2")
+		require.Error(t, verifyReleaseRef(repo.ctxAt(t)))
+
 		repo.run(t, "push", "origin", "HEAD:main")
 		assert.NoError(t, verifyReleaseRef(repo.ctxAt(t)))
 	})
