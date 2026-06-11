@@ -18,11 +18,9 @@ import (
 	"slices"
 
 	"github.com/spf13/cobra"
-
-	"github.com/docker/secrets-engine/store"
 )
 
-func ListCommand(kc store.Store) *cobra.Command {
+func ListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "ls",
 		Aliases: []string{"list"},
@@ -30,6 +28,10 @@ func ListCommand(kc store.Store) *cobra.Command {
 		Long:    "Lists the names of all secrets stored in the local OS keychain.",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			kc, err := StoreFrom(cmd.Context())
+			if err != nil {
+				return err
+			}
 			l, err := kc.GetAllMetadata(cmd.Context())
 			if err != nil {
 				return err
