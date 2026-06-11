@@ -26,7 +26,6 @@ import (
 	"github.com/spf13/cobra"
 
 	pass "github.com/docker/secrets-engine/plugins/pass/store"
-	"github.com/docker/secrets-engine/store"
 	"github.com/docker/secrets-engine/x/secrets"
 )
 
@@ -46,7 +45,7 @@ type stdinPayload struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
-func SetCommand(kc store.Store) *cobra.Command {
+func SetCommand() *cobra.Command {
 	opts := setOpts{}
 	cmd := &cobra.Command{
 		Use:     "set id[=value]",
@@ -56,6 +55,10 @@ func SetCommand(kc store.Store) *cobra.Command {
 		Example: strings.Trim(setExample, "\n"),
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			kc, err := StoreFrom(cmd.Context())
+			if err != nil {
+				return err
+			}
 			var s secret
 			if isNotImplicitReadFromStdinSyntax(args) {
 				va, err := parseArg(args[0])
