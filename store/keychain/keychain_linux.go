@@ -65,6 +65,9 @@ type secretService interface {
 	DeleteItem(item dbus.ObjectPath) error
 	GetAttributes(item dbus.ObjectPath) (kc.Attributes, error)
 	GetSecret(item dbus.ObjectPath, session kc.Session) ([]byte, error)
+	SetItemSecret(item dbus.ObjectPath, secret kc.Secret) error
+	SetItemAttributes(item dbus.ObjectPath, attributes kc.Attributes) error
+	SetItemLabel(item dbus.ObjectPath, label string) error
 	Close() error
 }
 
@@ -385,11 +388,41 @@ func (k *keychainStore[T]) Save(_ context.Context, id store.ID, secret store.Sec
 	safelySetID(id, attributes)
 
 	label := k.itemLabel(id.String())
-	properties := kc.NewSecretProperties(label, attributes)
 
-	_, err = service.CreateItem(objectPath, properties, sessSecret, kc.ReplaceBehaviorReplace)
+	// Find existing items for this identity by the stable triple only
+	// {service:group, service:name, id}, never the volatile metadata, so a
+	// changed metadata value can never hide a previously-stored item. This is
+	// what makes the in-place update below reliable and stops the duplicate
+	// accumulation described in issue #446.
+	ident := make(map[string]string)
+	safelySetMetadata(k.serviceGroup, k.serviceName, ident)
+	safelySetID(id, ident)
+
+	items, err := service.SearchCollection(objectPath, ident)
 	if err != nil {
 		return err
+	}
+
+	// Nothing stored yet: create a fresh item.
+	if len(items) == 0 {
+		properties := kc.NewSecretProperties(label, attributes)
+		_, err = service.CreateItem(objectPath, properties, sessSecret, kc.ReplaceBehaviorReplace)
+		return err
+	}
+
+	// Update the first match in place. Its object path is preserved, so the
+	// secret is never momentarily absent and no duplicate is minted. Writing the
+	// secret value IS the operation, so only its failure fails Save; refreshing
+	// the attributes and label and collapsing any pre-existing duplicates are
+	// best-effort (the secret is already stored) and must not flip the result.
+	primary := items[0]
+	if err := service.SetItemSecret(primary, sessSecret); err != nil {
+		return err
+	}
+	_ = service.SetItemAttributes(primary, attributes)
+	_ = service.SetItemLabel(primary, label)
+	for _, dup := range items[1:] {
+		_ = service.DeleteItem(dup)
 	}
 
 	return nil
