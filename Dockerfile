@@ -111,10 +111,14 @@ RUN --mount=type=bind,target=.,ro \
 EOT
 
 FROM golang AS govulncheck
+# Pinned: govulncheck v1.4.0 panics ("ForEachElement called on type containing
+# *types.TypeParam") when scanning generic code; v1.3.0 is the last good release.
+# See https://github.com/golang/go/issues/80059. Bump once a fix ships.
+ARG GOVULNCHECK_VERSION=v1.3.0
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     --mount=type=tmpfs,target=/go/src/ \
-    go install "golang.org/x/vuln/cmd/govulncheck@latest" \
+    go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" \
     && govulncheck -version
 
 FROM golang AS do-govulncheck
