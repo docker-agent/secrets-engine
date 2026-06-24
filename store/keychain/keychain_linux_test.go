@@ -48,11 +48,32 @@ type fakeService struct {
 	// concurrency-safe: the tests that read them drive a single sequential
 	// operation through the fake.
 	createCalls    int
+	setSecretCalls int
+	deleteCalls    int
 	setSecretItems []dbus.ObjectPath
 	deletedItems   []dbus.ObjectPath
 
+	// {createItem,setSecret,deleteItem}LockedErrs is how many leading calls of
+	// each kind fail with the secret service "collection is locked" D-Bus error
+	// before one succeeds, simulating a collection that relocks underneath the
+	// store (see withRelockRetry). The error is wrapped exactly as the real
+	// service wraps it, so the tests exercise the errors.As-through-wrap path
+	// isLockedDBusError depends on. unlockCalls counts the re-unlocks the retry
+	// issues; unlockErr, when set, makes Unlock fail (e.g. a dismissed prompt).
+	createItemLockedErrs int
+	setSecretLockedErrs  int
+	deleteItemLockedErrs int
+	unlockCalls          int
+	unlockErr            error
+
 	opened atomic.Int64
 	closed atomic.Int64
+}
+
+// lockedErr mirrors how the real SecretService wraps a locked-collection D-Bus
+// error (see secretservice.go), so isLockedDBusError must unwrap to detect it.
+func lockedErr(op string) error {
+	return fmt.Errorf("failed to %s: %w", op, dbus.Error{Name: secretServiceIsLockedError})
 }
 
 func (f *fakeService) Collections() ([]dbus.ObjectPath, error) {
@@ -65,24 +86,39 @@ func (f *fakeService) OpenSession(kc.AuthenticationMode) (*kc.Session, error) {
 	// lets the Save path run end-to-end against the fake.
 	return &kc.Session{Mode: kc.AuthenticationInsecurePlain}, nil
 }
-func (f *fakeService) CloseSession(*kc.Session)       {}
-func (f *fakeService) Unlock([]dbus.ObjectPath) error { return nil }
+func (f *fakeService) CloseSession(*kc.Session) {}
+func (f *fakeService) Unlock([]dbus.ObjectPath) error {
+	f.unlockCalls++
+	return f.unlockErr
+}
+
 func (f *fakeService) SearchCollection(dbus.ObjectPath, kc.Attributes) ([]dbus.ObjectPath, error) {
 	return f.items, nil
 }
 
 func (f *fakeService) CreateItem(dbus.ObjectPath, map[string]dbus.Variant, kc.Secret, kc.ReplaceBehavior) (dbus.ObjectPath, error) {
 	f.createCalls++
+	if f.createCalls <= f.createItemLockedErrs {
+		return "", lockedErr("create item")
+	}
 	return "/created", nil
 }
 
 func (f *fakeService) DeleteItem(item dbus.ObjectPath) error {
+	f.deleteCalls++
+	if f.deleteCalls <= f.deleteItemLockedErrs {
+		return lockedErr("delete item")
+	}
 	f.deletedItems = append(f.deletedItems, item)
 	return nil
 }
 func (f *fakeService) GetAttributes(dbus.ObjectPath) (kc.Attributes, error)  { return nil, nil }
 func (f *fakeService) GetSecret(dbus.ObjectPath, kc.Session) ([]byte, error) { return nil, nil }
 func (f *fakeService) SetItemSecret(item dbus.ObjectPath, _ kc.Secret) error {
+	f.setSecretCalls++
+	if f.setSecretCalls <= f.setSecretLockedErrs {
+		return lockedErr("set item secret")
+	}
 	f.setSecretItems = append(f.setSecretItems, item)
 	return nil
 }
@@ -103,6 +139,16 @@ func withFakeService(t *testing.T, fake *fakeService) {
 		fake.opened.Add(1)
 		return fake, nil
 	}
+}
+
+// stubRelockSleep replaces the relock backoff sleep with a no-op so retry tests
+// run without real delays, restoring it on cleanup. It mutates the package-level
+// sleepFn var, so tests using it must not run in parallel.
+func stubRelockSleep(t *testing.T) {
+	t.Helper()
+	orig := sleepFn
+	t.Cleanup(func() { sleepFn = orig })
+	sleepFn = func(time.Duration) {}
 }
 
 // TestKeychainGetNotFound exercises the full Get path against the fake — open,
@@ -178,6 +224,79 @@ func TestKeychainSaveCollapsesDuplicatesInPlace(t *testing.T) {
 		"secret must be rewritten on the first match in place")
 	assert.ElementsMatch(t, []dbus.ObjectPath{"/item/b", "/item/c"}, fake.deletedItems,
 		"the remaining duplicates must be collapsed, leaving only the first match")
+}
+
+// TestKeychainSaveRetriesWhenCreateRelocks covers the create path: gnome-keyring
+// can relock the collection between the unlock and the CreateItem, so a fresh
+// Save must react to the locked error by unlocking and retrying rather than
+// failing.
+func TestKeychainSaveRetriesWhenCreateRelocks(t *testing.T) {
+	stubRelockSleep(t)
+	fake := &fakeService{} // no items -> create path
+	fake.createItemLockedErrs = 2
+	withFakeService(t, fake)
+
+	ks := setupKeychain(t, nil)
+	require.NoError(t, ks.Save(t.Context(), store.MustParseID("com.test.test/test/bob"),
+		&mocks.MockCredential{Username: "bob", Password: "bob-password"}))
+
+	assert.Equal(t, 3, fake.createCalls, "two locked failures then one success")
+	assert.Equal(t, 2, fake.unlockCalls, "exactly one Unlock per relock retry")
+}
+
+// TestKeychainSaveRetriesWhenSetSecretRelocks covers the in-place update path:
+// the SetItemSecret that rewrites the surviving item must survive a relock.
+func TestKeychainSaveRetriesWhenSetSecretRelocks(t *testing.T) {
+	stubRelockSleep(t)
+	fake := &fakeService{items: []dbus.ObjectPath{"/item/a"}}
+	fake.setSecretLockedErrs = 2
+	withFakeService(t, fake)
+
+	ks := setupKeychain(t, nil)
+	require.NoError(t, ks.Save(t.Context(), store.MustParseID("com.test.test/test/bob"),
+		&mocks.MockCredential{Username: "bob", Password: "bob-password"}))
+
+	assert.Equal(t, []dbus.ObjectPath{"/item/a"}, fake.setSecretItems,
+		"the secret must be written in place once the relock clears")
+	assert.Equal(t, 2, fake.unlockCalls, "exactly one Unlock per relock retry")
+}
+
+// TestKeychainSaveCollapseRetriesWhenDeleteRelocks is the unit-level counterpart
+// of the real-keyring backlog test: collapsing a duplicate must drain it even if
+// the collection relocks mid-delete. The collapse delete is best-effort, but a
+// silently swallowed locked error would leave the duplicate behind — the exact
+// #446 symptom — so it is still relock-aware.
+func TestKeychainSaveCollapseRetriesWhenDeleteRelocks(t *testing.T) {
+	stubRelockSleep(t)
+	fake := &fakeService{items: []dbus.ObjectPath{"/item/a", "/item/b"}}
+	fake.deleteItemLockedErrs = 2
+	withFakeService(t, fake)
+
+	ks := setupKeychain(t, nil)
+	require.NoError(t, ks.Save(t.Context(), store.MustParseID("com.test.test/test/bob"),
+		&mocks.MockCredential{Username: "bob", Password: "bob-password"}))
+
+	assert.Equal(t, []dbus.ObjectPath{"/item/b"}, fake.deletedItems,
+		"the duplicate must be collapsed once the relock clears")
+	assert.Equal(t, 3, fake.deleteCalls, "two locked failures then one success")
+	assert.Equal(t, 2, fake.unlockCalls, "exactly one Unlock per relock retry")
+}
+
+// TestKeychainSaveStopsRetryingAfterMaxRelocks asserts the retry is bounded: a
+// persistently locked collection surfaces the locked error to the caller instead
+// of looping forever.
+func TestKeychainSaveStopsRetryingAfterMaxRelocks(t *testing.T) {
+	stubRelockSleep(t)
+	fake := &fakeService{}              // no items -> create path
+	fake.createItemLockedErrs = 1 << 30 // never recovers
+	withFakeService(t, fake)
+
+	ks := setupKeychain(t, nil)
+	err := ks.Save(t.Context(), store.MustParseID("com.test.test/test/bob"),
+		&mocks.MockCredential{Username: "bob", Password: "bob-password"})
+	require.Error(t, err)
+	assert.True(t, isLockedDBusError(err), "the persistent locked error must reach the caller")
+	assert.Equal(t, maxRelockRetries+1, fake.createCalls, "initial attempt plus the bounded retries")
 }
 
 // The real-keychain dedup tests use their own service group/name so their items
@@ -293,7 +412,14 @@ func seedRealDuplicates(t *testing.T, serviceGroup, serviceName string, id store
 		safelySetMetadata(serviceGroup, serviceName, attrs)
 		safelySetID(id, attrs)
 
-		_, err = svc.CreateItem(collection, kc.NewSecretProperties(label, attrs), sessSecret, kc.ReplaceBehaviorDoNotReplace)
+		// Seed directly against the daemon, but stay relock-aware: a prior op's
+		// closing connection can relock the collection between the unlock above
+		// and this create (see withRelockRetry), which would otherwise fail the
+		// seed with "Cannot create an item in a locked collection".
+		err = withRelockRetry(svc, collection, func() error {
+			_, createErr := svc.CreateItem(collection, kc.NewSecretProperties(label, attrs), sessSecret, kc.ReplaceBehaviorDoNotReplace)
+			return createErr
+		})
 		require.NoError(t, err)
 	}
 }
@@ -318,7 +444,9 @@ func purgeRealItems(t *testing.T, serviceGroup, serviceName string, id store.ID)
 	items, err := svc.SearchCollection(collection, attrs)
 	require.NoError(t, err)
 	for _, item := range items {
-		require.NoError(t, svc.DeleteItem(item))
+		require.NoError(t, withRelockRetry(svc, collection, func() error {
+			return svc.DeleteItem(item)
+		}))
 	}
 }
 
