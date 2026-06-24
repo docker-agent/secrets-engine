@@ -111,10 +111,20 @@ RUN --mount=type=bind,target=.,ro \
 EOT
 
 FROM golang AS govulncheck
+# Pinned to the golang/vuln v1.3.0 commit (SHA, not the mutable tag). govulncheck
+# v1.4.0 bumped golang.org/x/tools to v0.46.0, whose new generic-method SSA
+# support has an incomplete RuntimeTypes guard: a parameterized type boxed in a
+# closure inside a generic method reaches typesinternal.ForEachElement still
+# uninstantiated and panics ("ForEachElement called on type containing
+# *types.TypeParam"). v1.3.0 uses x/tools v0.44.0 (pre-regression) and scans
+# cleanly. Root cause: golang/go#80055 (fix CL go.dev/cl/792260, not yet
+# released); govulncheck-facing report: golang/go#80059. Go resolves @<sha> to a
+# pseudo-version. Bump once x/tools ships the fix and golang/vuln picks it up.
+ARG GOVULNCHECK_VERSION=0782b76014f15f24e22a438f30f308df42899ba1
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     --mount=type=tmpfs,target=/go/src/ \
-    go install "golang.org/x/vuln/cmd/govulncheck@latest" \
+    go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" \
     && govulncheck -version
 
 FROM golang AS do-govulncheck
