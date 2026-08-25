@@ -21,9 +21,6 @@ jobs:
         subtest:
           - fedora-43-gnome-keyring
           - ubuntu-24-gnome-keyring
-          # password-protected keyring, locked collection: asserts store ops
-          # fail fast with ErrCollectionLocked instead of hanging on a prompt
-          # nothing can answer
           - ubuntu-24-gnome-keyring-locked
           # disabled kdewallet tests since it prompts for a password in a
           # headless environment... need to still fix this

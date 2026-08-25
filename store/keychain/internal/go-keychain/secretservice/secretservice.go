@@ -412,9 +412,7 @@ const ReplaceBehaviorDoNotReplace = 0
 // ReplaceBehaviorReplace
 const ReplaceBehaviorReplace = 1
 
-// CreateItem creates an item in the collection. The call can open a prompt
-// (e.g. when the collection relocked in the meantime); ctx bounds that prompt
-// wait (see [SecretService.PromptAndWait]).
+// CreateItem creates an item in the collection; ctx bounds the prompt wait.
 func (s *SecretService) CreateItem(
 	ctx context.Context,
 	collection dbus.ObjectPath,
@@ -446,8 +444,7 @@ func (s *SecretService) CreateItem(
 	return item, nil
 }
 
-// DeleteItem deletes an item. The call can open a prompt; ctx bounds that
-// prompt wait (see [SecretService.PromptAndWait]).
+// DeleteItem deletes an item; ctx bounds the prompt wait.
 func (s *SecretService) DeleteItem(ctx context.Context, item dbus.ObjectPath) (err error) {
 	var prompt dbus.ObjectPath
 	err = s.Obj(item).
@@ -510,9 +507,7 @@ func (s *SecretService) GetSecret(item dbus.ObjectPath, session Session) (secret
 // NullPrompt
 const NullPrompt = "/"
 
-// Unlock unlocks the given collections or items. On a password-protected
-// keyring this opens the backend's unlock prompt; ctx bounds that prompt wait
-// (see [SecretService.PromptAndWait]).
+// Unlock unlocks the given collections or items; ctx bounds the prompt wait.
 func (s *SecretService) Unlock(ctx context.Context, items []dbus.ObjectPath) (err error) {
 	var dummy []dbus.ObjectPath
 	var prompt dbus.ObjectPath
@@ -529,8 +524,7 @@ func (s *SecretService) Unlock(ctx context.Context, items []dbus.ObjectPath) (er
 	return nil
 }
 
-// LockItems locks the given collections or items. The call can open a prompt;
-// ctx bounds that prompt wait (see [SecretService.PromptAndWait]).
+// LockItems locks the given collections or items; ctx bounds the prompt wait.
 func (s *SecretService) LockItems(ctx context.Context, items []dbus.ObjectPath) (err error) {
 	var dummy []dbus.ObjectPath
 	var prompt dbus.ObjectPath
@@ -557,16 +551,12 @@ func (p PromptDismissedError) Error() string {
 	return p.err.Error()
 }
 
-// promptTimeout caps how long PromptAndWait waits for the user to answer a
-// prompt when the caller's ctx carries no (earlier) deadline of its own, so a
-// prompt that nobody will ever answer cannot block an operation forever.
+// promptTimeout caps how long PromptAndWait waits for a prompt to complete.
 const promptTimeout = 30 * time.Second
 
-// PromptAndWait displays the given prompt and blocks until the user answers
-// it, the prompt is dismissed, ctx is done, or promptTimeout elapses —
-// whichever comes first. ctx lets a caller bound the human-wait with its own
-// deadline or cancellation; the promptTimeout cap always applies as an upper
-// bound. A NullPrompt returns immediately with no error.
+// PromptAndWait displays the prompt and blocks until it completes, is
+// dismissed, ctx is done, or promptTimeout elapses. A NullPrompt returns
+// immediately.
 //
 // PromptAndWait is NOT thread-safe.
 func (s *SecretService) PromptAndWait(ctx context.Context, prompt dbus.ObjectPath) (paths *dbus.Variant, err error) {
@@ -577,8 +567,7 @@ func (s *SecretService) PromptAndWait(ctx context.Context, prompt dbus.ObjectPat
 	if call.Err != nil {
 		return nil, fmt.Errorf("failed to prompt: %w", call.Err)
 	}
-	// The timer is created once, outside the receive loop, so unrelated bus
-	// signals cannot keep resetting the timeout.
+	// created once, outside the loop, so unrelated signals cannot reset it
 	timeout := time.After(promptTimeout)
 	for {
 		var result PromptCompletedResult

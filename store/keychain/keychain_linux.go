@@ -239,30 +239,22 @@ func isCollectionUnlocked(collectionPath dbus.ObjectPath, service secretService)
 	return ErrCollectionLocked
 }
 
-// lockedError wraps cause under the exported [ErrCollectionLocked] sentinel,
-// naming the collection so the message is actionable on its own.
+// lockedError wraps cause under [ErrCollectionLocked], naming the collection.
 func lockedError(collectionPath dbus.ObjectPath, cause error) error {
 	return fmt.Errorf("%w: could not unlock collection %q: %w", ErrCollectionLocked, collectionPath, cause)
 }
 
-// ensureCollectionUnlocked checks the collection's lock state and, when
-// locked, asks the secret service to unlock it. On a passwordless keyring
-// (e.g. the PAM-unlocked login keyring) that unlock completes silently via the
-// null prompt; on a password-protected keyring it opens the backend's unlock
-// prompt.
+// ensureCollectionUnlocked unlocks the collection if it is locked. On a
+// passwordless keyring the unlock completes silently via the null prompt; on a
+// password-protected keyring it opens the backend's unlock prompt.
 //
-// ctx bounds the prompt wait — deliberately the caller's ORIGINAL operation
-// context, not the [context.WithoutCancel] connection context from
-// [operationService]: in-flight D-Bus operations are protected from teardown,
-// but waiting on a human is bounded by the caller's deadline or cancellation
-// (and by the backstop timeout in the secretservice package). A null prompt is
-// unaffected by ctx, so best-effort cleanup calls with an already-cancelled
-// ctx still succeed on passwordless keyrings.
+// ctx bounds the prompt wait. It is the caller's original operation context,
+// not the detached connection context from [operationService]: waiting on the
+// user is bounded by the caller. A null prompt ignores ctx, so cleanup calls
+// with a cancelled ctx still work on passwordless keyrings.
 //
-// When the unlock fails — the prompt was dismissed (gnome-keyring does this
-// immediately when no prompter can be shown, e.g. headless), timed out, or ctx
-// expired — the error wraps [ErrCollectionLocked] so callers can detect the
-// locked state with errors.Is.
+// A failed unlock (prompt dismissed, timed out, or ctx expired) wraps
+// [ErrCollectionLocked].
 func ensureCollectionUnlocked(ctx context.Context, service secretService, collectionPath dbus.ObjectPath) error {
 	err := isCollectionUnlocked(collectionPath, service)
 	if err == nil {
@@ -341,10 +333,8 @@ var sleepFn = time.Sleep
 // handful of spaced-out prompts at worst, and a dismissed prompt makes Unlock
 // return an error that aborts the loop immediately rather than re-prompting.
 //
-// ctx bounds each retry's unlock-prompt wait (see [ensureCollectionUnlocked]
-// for why the original operation context is used). Failures to unlock — and a
-// collection that is still locked once the retries are exhausted — are wrapped
-// under [ErrCollectionLocked].
+// ctx bounds each retry's unlock-prompt wait. Unlock failures, and a
+// collection still locked after the retries, wrap [ErrCollectionLocked].
 func withRelockRetry(ctx context.Context, service secretService, collectionPath dbus.ObjectPath, op func() error, itemPaths ...dbus.ObjectPath) error {
 	err := op()
 	delay := relockRetryBaseDelay

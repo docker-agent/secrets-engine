@@ -75,9 +75,7 @@ type fakeService struct {
 	unlockCalls          int
 	unlockErr            error
 
-	// locked is returned by IsLocked, so a test can present the collection as
-	// locked up front and drive the ensureCollectionUnlocked paths. The zero
-	// value (unlocked) keeps every existing test passing.
+	// locked is returned by IsLocked.
 	locked bool
 
 	lastUnlockPaths []dbus.ObjectPath
@@ -388,12 +386,6 @@ func TestKeychainSaveStopsRetryingAfterMaxRelocks(t *testing.T) {
 	assert.Equal(t, maxRelockRetries+1, fake.createCalls, "initial attempt plus the bounded retries")
 }
 
-// TestKeychainLockedCollectionSurfacesErrCollectionLocked is the unit-level
-// regression test for a locked collection that cannot be unlocked (e.g. a
-// headless host where gnome-keyring immediately dismisses the unlock prompt
-// because no prompter can be shown): every store operation must fail fast with
-// an error matching the exported ErrCollectionLocked sentinel and naming the
-// collection, instead of surfacing an opaque prompt error.
 func TestKeychainLockedCollectionSurfacesErrCollectionLocked(t *testing.T) {
 	ops := map[string]func(store.Store) error{
 		"get": func(ks store.Store) error {
@@ -434,10 +426,6 @@ func TestKeychainLockedCollectionSurfacesErrCollectionLocked(t *testing.T) {
 	}
 }
 
-// TestKeychainLockedCollectionUnlocksAndProceeds pins the interactive happy
-// path: a locked collection whose unlock succeeds (null prompt on a
-// passwordless keyring, or the user answering the prompt) must not fail the
-// operation.
 func TestKeychainLockedCollectionUnlocksAndProceeds(t *testing.T) {
 	fake := &fakeService{
 		locked: true,
@@ -452,10 +440,6 @@ func TestKeychainLockedCollectionUnlocksAndProceeds(t *testing.T) {
 	assert.Equal(t, 1, fake.unlockCalls, "the locked collection must be unlocked before the read")
 }
 
-// TestKeychainRelockRetryUnlockFailureWrapsErrCollectionLocked covers the
-// retry loop's unlock: when the collection relocks mid-operation and the
-// re-unlock fails (e.g. a dismissed prompt), the surfaced error must match the
-// exported sentinel too.
 func TestKeychainRelockRetryUnlockFailureWrapsErrCollectionLocked(t *testing.T) {
 	stubRelockSleep(t)
 	fake := &fakeService{items: []dbus.ObjectPath{"/item/a"}}
@@ -765,18 +749,8 @@ func TestKeychainSaveDoesNotAccumulate(t *testing.T) {
 		"the surviving item's metadata must be refreshed in place")
 }
 
-// TestKeychainLiveLockedCollection is the live regression test for
-// headless locked keyrings: against a password-protected keyring with no way to
-// answer the unlock prompt (headless, no prompter), a store operation on a
-// locked collection must fail quickly with an error matching the exported
-// ErrCollectionLocked sentinel — not hang and not surface an opaque prompt
-// error.
-//
-// It is gated behind TEST_KEYCHAIN_LOCKED_COLLECTION because it only makes
-// sense against a PASSWORD-PROTECTED keyring (see the gnome-keyring-locked
-// script): on the passwordless keyring the regular suite runs against, the
-// store's unlock succeeds via the null prompt and the operation would simply
-// succeed.
+// Needs a live password-protected keyring (see scripts/gnome-keyring-locked);
+// on a passwordless keyring the unlock succeeds and the operation passes.
 func TestKeychainLiveLockedCollection(t *testing.T) {
 	if os.Getenv("TEST_KEYCHAIN_LOCKED_COLLECTION") == "" {
 		t.Skip("TEST_KEYCHAIN_LOCKED_COLLECTION not set; needs a live password-protected keyring")
