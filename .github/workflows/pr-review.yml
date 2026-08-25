@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   review:
-    uses: docker/docker-agent-action/.github/workflows/review-pr.yml@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+    uses: docker/docker-agent-action/.github/workflows/review-pr.yml@06e1767af06263c93d712449cbf859778d9392ee # v2.0.5
     # Scoped to the job so other jobs in this workflow are not over-permissioned
     permissions:
       contents: read # Read repository files and PR diffs
@@ -20,4 +20,4 @@ jobs:
       issues: write # Create security incident issues if secrets are detected in output
       checks: write # (Optional) Show review progress as a check run on the PR
       id-token: write # Required for OIDC authentication to AWS Secrets Manager
-      actions: read # Required for the reusable workflow
+      actions: write # Required for the reusable workflow
