@@ -78,8 +78,7 @@ var ErrKeychainUnavailable = errors.New("keychain backend unavailable")
 // operation's context. Detect it with [errors.Is].
 //
 // Unlike [ErrKeychainUnavailable], the collection exists and still holds the
-// user's credentials. Tell the user how to unlock it; do not fall back to
-// another store, which would split credentials across stores.
+// user's credentials. Tell the user how to unlock it.
 //
 // Like the sentinels above, it is declared in the cross-platform file so
 // callers need no build tags; it only matches on Linux.
