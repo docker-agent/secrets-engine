@@ -138,52 +138,48 @@ every store operation (not only the probe) benefits.
 
 2026-08-25 Locked collections fail fast with ErrCollectionLocked; unlock prompt bounded
 
-On headless Linux hosts (SSH key-only login, gnome-keyring) the login
-collection comes up locked after every keyring-daemon restart — PAM has no
-password to auto-unlock it with. The store's only reaction to a locked
-collection was `Service.Unlock` → `PromptAndWait`, whose failures surfaced as
-opaque strings ("failed to prompt: prompt dismissed" / "prompt timed out")
-that downstream consumers could not classify.
+On headless Linux hosts with SSH key-only logins, PAM has no password to
+auto-unlock the login keyring, so the collection is locked after every
+keyring-daemon restart. The store reacted to a locked collection by calling
+Service.Unlock and waiting on the prompt. The failures surfaced as opaque
+strings ("failed to prompt: prompt dismissed", "prompt timed out") that
+callers could not classify, and the wait was a hardcoded 30 seconds.
 
 Decisions:
 
-- **One exported sentinel, `ErrCollectionLocked`**, declared in the
-  cross-platform `keychain.go` (mirroring `ErrKeychainUnavailable` /
-  `ErrNoDefaultCollection`), Linux-only behavior. Every path that fails
-  because the collection is locked and could not be unlocked wraps it: the
-  up-front unlock in `ensureCollectionUnlocked` (which also names the
-  collection in the message), the re-unlock inside `withRelockRetry`, and a
-  collection still locked once the bounded retries are exhausted. The
-  underlying prompt failure is preserved as the wrapped cause; no exported
-  prompt-dismissed/timed-out sentinels (unexported-cause promotion pattern,
-  same as `errSessionBusUnavailable`).
-- **The prompt wait is ctx-bounded.** `PromptAndWait` (and the prompt-capable
-  calls `Unlock`, `LockItems`, `CreateItem`, `DeleteItem`) now take a
-  `context.Context`; store operations pass their ORIGINAL operation ctx —
-  deliberately not the `context.WithoutCancel` connection ctx — so a caller
-  deadline bounds the human-wait while in-flight D-Bus calls stay protected
-  from teardown. The internal 30s cap remains as an upper bound, created once
-  outside the receive loop (previously `time.After` inside the loop was reset
-  by every unrelated bus signal). A null prompt returns before the ctx check,
-  so best-effort cleanup calls with cancelled contexts still succeed on
+- One exported sentinel, `ErrCollectionLocked`, declared in the cross-platform
+  `keychain.go` like `ErrKeychainUnavailable` and `ErrNoDefaultCollection`.
+  Every path that fails because the collection stayed locked wraps it: the
+  up-front unlock in `ensureCollectionUnlocked` (which names the collection),
+  the re-unlock in `withRelockRetry`, and a collection still locked after the
+  bounded retries. The prompt failure is kept as the wrapped cause. No
+  exported prompt-dismissed or prompt-timeout sentinels; those stay unexported
+  causes, the same pattern as `errSessionBusUnavailable`.
+- The prompt wait is bounded by the operation's context. `PromptAndWait`,
+  `Unlock`, `LockItems`, `CreateItem` and `DeleteItem` now take a ctx. Store
+  operations pass their original ctx, not the `context.WithoutCancel`
+  connection ctx, so a caller deadline bounds the wait for the user while
+  in-flight D-Bus calls stay protected from teardown. The internal 30s cap
+  remains as an upper bound and is created once outside the receive loop;
+  previously any unrelated bus signal reset it. A null prompt returns before
+  the ctx check, so cleanup calls with cancelled contexts still work on
   passwordless keyrings.
-- **Nothing else was added, deliberately.** Evaluated and rejected:
-  prompter-presence probes (`org.gnome.keyring.SystemPrompter` is
-  activatable-but-unstartable on headless hosts with gcr installed, and
-  KWallet/KeePassXC never own that name — both directions misclassify);
-  password callbacks and programmatic master-password unlock via
-  `org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface` (gnome-only,
-  and hands the library a UX/credential-handling responsibility the caller
-  owns); library TTY prompting; and a New-time lock check (lock state is
-  per-operation and mutable; locked ≠ unavailable). The caller detects
-  `ErrCollectionLocked` via `errors.Is` and owns remediation messaging — and
-  must NOT fall back to another store, which would split credentials.
-- Validated live (Ubuntu 24.04 VM, gnome-keyring): headless + locked fails in
-  ~15ms with "prompt dismissed" (gnome-keyring dismisses immediately when no
-  prompter can be shown, with or without gcr installed); a real prompt on a
-  display still completes and unlocks; a 2s caller deadline aborts an
-  unanswered prompt at 2.003s. CI: new `ubuntu-24-gnome-keyring-locked`
-  target runs `TestKeychainLiveLockedCollection` against a password-protected
-  keyring (`gnome-keyring-daemon --login`) with the collection locked.
+- Nothing else was added. Rejected: prompter-presence probes (the
+  `org.gnome.keyring.SystemPrompter` name is activatable but unstartable on
+  headless hosts with gcr installed, and KWallet/KeePassXC never own it, so a
+  probe misclassifies in both directions), password callbacks and
+  master-password unlock via the gnome-only
+  `InternalUnsupportedGuiltRiddenInterface`, TTY prompting in the library, and
+  a lock check in `New` (lock state is per-operation and mutable). The caller
+  detects `ErrCollectionLocked` with `errors.Is` and owns the remediation
+  message. A locked collection must not be treated as unavailable; falling
+  back to another store would split credentials across stores.
+- Validated live on an Ubuntu 24.04 VM: a headless locked operation fails in
+  about 15ms with "prompt dismissed" (gnome-keyring dismisses immediately when
+  no prompter can start), an answered prompt on a display still works, and a
+  2s caller deadline aborts an unanswered prompt at 2s. A new
+  `ubuntu-24-gnome-keyring-locked` CI target runs
+  `TestKeychainLiveLockedCollection` against a password-protected keyring with
+  the collection locked.
 
 ---
