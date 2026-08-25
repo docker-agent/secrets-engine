@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -74,6 +75,11 @@ type fakeService struct {
 	unlockCalls          int
 	unlockErr            error
 
+	// locked is returned by IsLocked, so a test can present the collection as
+	// locked up front and drive the ensureCollectionUnlocked paths. The zero
+	// value (unlocked) keeps every existing test passing.
+	locked bool
+
 	lastUnlockPaths []dbus.ObjectPath
 
 	// availableErr, when set, is returned by Available so a test can drive the
@@ -105,14 +111,14 @@ func (f *fakeService) Collections() ([]dbus.ObjectPath, error) {
 	return []dbus.ObjectPath{loginKeychainObjectPath}, nil
 }
 func (f *fakeService) ReadAlias(string) (dbus.ObjectPath, error) { return loginKeychainObjectPath, nil }
-func (f *fakeService) IsLocked(dbus.ObjectPath) (bool, error)    { return false, nil }
+func (f *fakeService) IsLocked(dbus.ObjectPath) (bool, error)    { return f.locked, nil }
 func (f *fakeService) OpenSession(kc.AuthenticationMode) (*kc.Session, error) {
 	// plain mode so Session.NewSecret works without a negotiated AES key, which
 	// lets the Save path run end-to-end against the fake.
 	return &kc.Session{Mode: kc.AuthenticationInsecurePlain}, nil
 }
 func (f *fakeService) CloseSession(*kc.Session) {}
-func (f *fakeService) Unlock(items []dbus.ObjectPath) error {
+func (f *fakeService) Unlock(_ context.Context, items []dbus.ObjectPath) error {
 	f.unlockCalls++
 	f.lastUnlockPaths = items
 	return f.unlockErr
@@ -122,7 +128,7 @@ func (f *fakeService) SearchCollection(dbus.ObjectPath, kc.Attributes) ([]dbus.O
 	return f.items, nil
 }
 
-func (f *fakeService) CreateItem(dbus.ObjectPath, map[string]dbus.Variant, kc.Secret, kc.ReplaceBehavior) (dbus.ObjectPath, error) {
+func (f *fakeService) CreateItem(context.Context, dbus.ObjectPath, map[string]dbus.Variant, kc.Secret, kc.ReplaceBehavior) (dbus.ObjectPath, error) {
 	f.createCalls++
 	if f.createCalls <= f.createItemLockedErrs {
 		return "", lockedErr("create item")
@@ -130,7 +136,7 @@ func (f *fakeService) CreateItem(dbus.ObjectPath, map[string]dbus.Variant, kc.Se
 	return "/created", nil
 }
 
-func (f *fakeService) DeleteItem(item dbus.ObjectPath) error {
+func (f *fakeService) DeleteItem(_ context.Context, item dbus.ObjectPath) error {
 	f.deleteCalls++
 	if f.deleteCalls <= f.deleteItemLockedErrs {
 		return lockedErr("delete item")
@@ -377,7 +383,93 @@ func TestKeychainSaveStopsRetryingAfterMaxRelocks(t *testing.T) {
 		&mocks.MockCredential{Username: "bob", Password: "bob-password"})
 	require.Error(t, err)
 	assert.True(t, isLockedDBusError(err), "the persistent locked error must reach the caller")
+	assert.ErrorIs(t, err, ErrCollectionLocked,
+		"a collection still locked after the bounded retries must be detectable via the exported sentinel")
 	assert.Equal(t, maxRelockRetries+1, fake.createCalls, "initial attempt plus the bounded retries")
+}
+
+// TestKeychainLockedCollectionSurfacesErrCollectionLocked is the unit-level
+// regression test for a locked collection that cannot be unlocked (e.g. a
+// headless host where gnome-keyring immediately dismisses the unlock prompt
+// because no prompter can be shown): every store operation must fail fast with
+// an error matching the exported ErrCollectionLocked sentinel and naming the
+// collection, instead of surfacing an opaque prompt error.
+func TestKeychainLockedCollectionSurfacesErrCollectionLocked(t *testing.T) {
+	ops := map[string]func(store.Store) error{
+		"get": func(ks store.Store) error {
+			_, err := ks.Get(t.Context(), store.MustParseID("com.test.test/test/bob"))
+			return err
+		},
+		"save": func(ks store.Store) error {
+			return ks.Save(t.Context(), store.MustParseID("com.test.test/test/bob"),
+				&mocks.MockCredential{Username: "bob", Password: "bob-password"})
+		},
+		"delete": func(ks store.Store) error {
+			return ks.Delete(t.Context(), store.MustParseID("com.test.test/test/bob"))
+		},
+		"get all metadata": func(ks store.Store) error {
+			_, err := ks.GetAllMetadata(t.Context())
+			return err
+		},
+		"filter": func(ks store.Store) error {
+			_, err := ks.Filter(t.Context(), store.MustParsePattern("**"))
+			return err
+		},
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeService{locked: true}
+			fake.unlockErr = errors.New("failed to prompt: prompt dismissed")
+			withFakeService(t, fake)
+
+			err := op(setupKeychain(t, nil))
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrCollectionLocked)
+			assert.ErrorContains(t, err, string(loginKeychainObjectPath),
+				"the error must name the locked collection")
+			assert.ErrorContains(t, err, "prompt dismissed",
+				"the unlock failure cause must be preserved")
+			assert.Equal(t, 1, fake.unlockCalls, "exactly one unlock attempt before failing fast")
+		})
+	}
+}
+
+// TestKeychainLockedCollectionUnlocksAndProceeds pins the interactive happy
+// path: a locked collection whose unlock succeeds (null prompt on a
+// passwordless keyring, or the user answering the prompt) must not fail the
+// operation.
+func TestKeychainLockedCollectionUnlocksAndProceeds(t *testing.T) {
+	fake := &fakeService{
+		locked: true,
+		items:  []dbus.ObjectPath{"/org/freedesktop/secrets/collection/login/1"},
+	}
+	withFakeService(t, fake)
+
+	ks := setupKeychain(t, nil)
+	secret, err := ks.Get(t.Context(), store.MustParseID("com.test.test/test/bob"))
+	require.NoError(t, err)
+	require.NotNil(t, secret)
+	assert.Equal(t, 1, fake.unlockCalls, "the locked collection must be unlocked before the read")
+}
+
+// TestKeychainRelockRetryUnlockFailureWrapsErrCollectionLocked covers the
+// retry loop's unlock: when the collection relocks mid-operation and the
+// re-unlock fails (e.g. a dismissed prompt), the surfaced error must match the
+// exported sentinel too.
+func TestKeychainRelockRetryUnlockFailureWrapsErrCollectionLocked(t *testing.T) {
+	stubRelockSleep(t)
+	fake := &fakeService{items: []dbus.ObjectPath{"/item/a"}}
+	fake.setSecretLockedErrs = 1 << 30 // never recovers
+	fake.unlockErr = errors.New("failed to prompt: prompt dismissed")
+	withFakeService(t, fake)
+
+	ks := setupKeychain(t, nil)
+	err := ks.Save(t.Context(), store.MustParseID("com.test.test/test/bob"),
+		&mocks.MockCredential{Username: "bob", Password: "bob-password"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCollectionLocked)
+	assert.ErrorContains(t, err, "unlock after relock")
+	assert.Equal(t, 1, fake.unlockCalls, "a failed unlock must abort the retry loop immediately")
 }
 
 // TestKeychainGetRetriesWhenCollectionRelocks covers the read path: GetSecret can
@@ -467,7 +559,7 @@ const (
 // stays unlocked once any earlier operation has unlocked it.)
 func ensureUnlocked(t *testing.T, svc *kc.SecretService, collection dbus.ObjectPath) {
 	t.Helper()
-	require.NoError(t, svc.Unlock([]dbus.ObjectPath{collection}))
+	require.NoError(t, svc.Unlock(context.Background(), []dbus.ObjectPath{collection}))
 	require.Eventually(t, func() bool {
 		locked, err := svc.IsLocked(collection)
 		return err == nil && !locked
@@ -570,8 +662,8 @@ func seedRealDuplicates(t *testing.T, serviceGroup, serviceName string, id store
 		// closing connection can relock the collection between the unlock above
 		// and this create (see withRelockRetry), which would otherwise fail the
 		// seed with "Cannot create an item in a locked collection".
-		err = withRelockRetry(svc, collection, func() error {
-			_, createErr := svc.CreateItem(collection, kc.NewSecretProperties(label, attrs), sessSecret, kc.ReplaceBehaviorDoNotReplace)
+		err = withRelockRetry(context.Background(), svc, collection, func() error {
+			_, createErr := svc.CreateItem(context.Background(), collection, kc.NewSecretProperties(label, attrs), sessSecret, kc.ReplaceBehaviorDoNotReplace)
 			return createErr
 		})
 		require.NoError(t, err)
@@ -601,8 +693,8 @@ func purgeRealItems(t *testing.T, serviceGroup, serviceName string, id store.ID)
 	items, err := svc.SearchCollection(collection, attrs)
 	require.NoError(t, err)
 	for _, item := range items {
-		require.NoError(t, withRelockRetry(svc, collection, func() error {
-			return svc.DeleteItem(item)
+		require.NoError(t, withRelockRetry(context.Background(), svc, collection, func() error {
+			return svc.DeleteItem(context.Background(), item)
 		}))
 	}
 }
@@ -671,6 +763,46 @@ func TestKeychainSaveDoesNotAccumulate(t *testing.T) {
 	assert.Equal(t, fmt.Sprintf("password-%d", saves-1), actual.Password)
 	assert.Equal(t, fmt.Sprintf("%d", saves-1), actual.Attributes["nonce"],
 		"the surviving item's metadata must be refreshed in place")
+}
+
+// TestKeychainLiveLockedCollection is the live regression test for
+// headless locked keyrings: against a password-protected keyring with no way to
+// answer the unlock prompt (headless, no prompter), a store operation on a
+// locked collection must fail quickly with an error matching the exported
+// ErrCollectionLocked sentinel — not hang and not surface an opaque prompt
+// error.
+//
+// It is gated behind TEST_KEYCHAIN_LOCKED_COLLECTION because it only makes
+// sense against a PASSWORD-PROTECTED keyring (see the gnome-keyring-locked
+// script): on the passwordless keyring the regular suite runs against, the
+// store's unlock succeeds via the null prompt and the operation would simply
+// succeed.
+func TestKeychainLiveLockedCollection(t *testing.T) {
+	if os.Getenv("TEST_KEYCHAIN_LOCKED_COLLECTION") == "" {
+		t.Skip("TEST_KEYCHAIN_LOCKED_COLLECTION not set; needs a live password-protected keyring")
+	}
+
+	svc, err := kc.NewService(context.Background())
+	require.NoError(t, err)
+	defer func() { _ = svc.Close() }()
+
+	collection, err := getDefaultCollection(svc)
+	require.NoError(t, err)
+	require.NoError(t, svc.LockItems(context.Background(), []dbus.ObjectPath{collection}))
+	locked, err := svc.IsLocked(collection)
+	require.NoError(t, err)
+	require.True(t, locked, "collection must be locked; is the keyring password-protected?")
+
+	ks := setupKeychain(t, nil)
+	start := time.Now()
+	_, err = ks.Get(t.Context(), store.MustParseID("com.test.test/test/bob"))
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCollectionLocked)
+	assert.ErrorContains(t, err, string(collection), "the error must name the locked collection")
+	assert.Less(t, elapsed, 15*time.Second,
+		"a locked collection must fail fast, not sit out the full prompt timeout")
 }
 
 // TestNewProbeSucceeds asserts the eager availability probe passes for a

@@ -38,10 +38,10 @@ func testKeyring(t *testing.T, mode AuthenticationMode) {
 	secret, err := session.NewSecret([]byte("secret"))
 	require.NoError(t, err)
 
-	err = srv.Unlock([]dbus.ObjectPath{collection})
+	err = srv.Unlock(t.Context(), []dbus.ObjectPath{collection})
 	require.NoError(t, err)
 
-	_, err = srv.CreateItem(collection, NewSecretProperties("testlabel", map[string]string{"foo": "bar"}), secret, ReplaceBehaviorReplace)
+	_, err = srv.CreateItem(t.Context(), collection, NewSecretProperties("testlabel", map[string]string{"foo": "bar"}), secret, ReplaceBehaviorReplace)
 	require.NoError(t, err)
 
 	items, err = srv.SearchCollection(collection, map[string]string{"foo": "bar"})
@@ -52,10 +52,10 @@ func testKeyring(t *testing.T, mode AuthenticationMode) {
 	require.NoError(t, err)
 	require.Equal(t, secretPlaintext, []byte("secret"))
 
-	err = srv.DeleteItem(gotItem)
+	err = srv.DeleteItem(t.Context(), gotItem)
 	require.NoError(t, err)
 
-	err = srv.LockItems([]dbus.ObjectPath{collection})
+	err = srv.LockItems(t.Context(), []dbus.ObjectPath{collection})
 	require.NoError(t, err)
 }
 
@@ -71,16 +71,16 @@ func TestGetAll(t *testing.T) {
 	secret, err := session.NewSecret([]byte("secret"))
 	require.NoError(t, err)
 
-	err = srv.Unlock([]dbus.ObjectPath{collection})
+	err = srv.Unlock(t.Context(), []dbus.ObjectPath{collection})
 	require.NoError(t, err)
 
-	item, err := srv.CreateItem(collection, NewSecretProperties("testlabel", map[string]string{"username": "testuser"}), secret, ReplaceBehaviorReplace)
+	item, err := srv.CreateItem(t.Context(), collection, NewSecretProperties("testlabel", map[string]string{"username": "testuser"}), secret, ReplaceBehaviorReplace)
 	require.NoError(t, err)
 
 	attrs, err := srv.GetAttributes(item)
 	require.NoError(t, err)
 	require.Equal(t, attrs["username"], "testuser")
 
-	err = srv.DeleteItem(item)
+	err = srv.DeleteItem(t.Context(), item)
 	require.NoError(t, err)
 }

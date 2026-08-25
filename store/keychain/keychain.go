@@ -71,6 +71,34 @@ var ErrNoDefaultCollection = errors.New("no default keychain collection availabl
 // ErrNoDefaultCollection lazily on the first operation, exactly as before.
 var ErrKeychainUnavailable = errors.New("keychain backend unavailable")
 
+// ErrCollectionLocked is returned by store operations when the keychain
+// collection is locked and could not be unlocked: the backend's unlock prompt
+// was dismissed (which is what gnome-keyring does immediately when no prompter
+// can be shown, e.g. on a headless host), timed out, or was aborted by the
+// operation's context.
+//
+// This is DISTINCT from [ErrKeychainUnavailable]: the backend is reachable and
+// the collection exists — it still holds the user's credentials, but they
+// cannot be read or written until the user unlocks the keyring (for example
+// via their desktop session, or `gnome-keyring-daemon --unlock`). Callers
+// should surface that remediation to the user rather than fall back to a
+// different store: writing new credentials elsewhere while the locked
+// collection still holds the old ones would split credentials across stores.
+//
+// A common cause on headless hosts: with SSH key-only logins there is no
+// password for PAM to auto-unlock the login keyring with, so the collection is
+// locked after every keyring-daemon restart.
+//
+// NOTE: like the sentinels above this condition is currently specific to the
+// Linux keyring (the freedesktop Secret Service). It is declared here, in the
+// cross-platform file, so platform-agnostic callers can reference it on every
+// platform without build tags; on non-Linux platforms it simply never matches.
+//
+// It is exported so callers can use [errors.Is] to detect the locked state and
+// present an actionable message, rather than relying on fragile error message
+// comparisons.
+var ErrCollectionLocked = errors.New("keychain collection is locked")
+
 type (
 	Option            interface{ apply(any) error }
 	optionFunc[K any] func(K) error

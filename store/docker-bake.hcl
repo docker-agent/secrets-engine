@@ -19,7 +19,8 @@ group "default" {
     # it just prompts anyway...
     # "fedora_43_kdewallet",
     # "ubuntu_24_kdewallet",
-    "ubuntu_24_gnome_keyring"
+    "ubuntu_24_gnome_keyring",
+    "ubuntu_24_gnome_keyring_locked"
   ]
 }
 
@@ -57,6 +58,15 @@ target "ubuntu_24_kdewallet" {
 target "ubuntu_24_gnome_keyring" {
   dockerfile = "store/Dockerfile"
   target     = "ubuntu-24-gnome-keyring"
+  context    = "."
+  args       = {
+    GO_VERSION = GO_VERSION
+  }
+}
+
+target "ubuntu_24_gnome_keyring_locked" {
+  dockerfile = "store/Dockerfile"
+  target     = "ubuntu-24-gnome-keyring-locked"
   context    = "."
   args       = {
     GO_VERSION = GO_VERSION

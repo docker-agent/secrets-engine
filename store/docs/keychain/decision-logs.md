@@ -135,3 +135,55 @@ every store operation (not only the probe) benefits.
   thread it into the dial (via `operationService`) like the other operations.
 
 ---
+
+2026-08-25 Locked collections fail fast with ErrCollectionLocked; unlock prompt bounded
+
+On headless Linux hosts (SSH key-only login, gnome-keyring) the login
+collection comes up locked after every keyring-daemon restart — PAM has no
+password to auto-unlock it with. The store's only reaction to a locked
+collection was `Service.Unlock` → `PromptAndWait`, whose failures surfaced as
+opaque strings ("failed to prompt: prompt dismissed" / "prompt timed out")
+that downstream consumers could not classify.
+
+Decisions:
+
+- **One exported sentinel, `ErrCollectionLocked`**, declared in the
+  cross-platform `keychain.go` (mirroring `ErrKeychainUnavailable` /
+  `ErrNoDefaultCollection`), Linux-only behavior. Every path that fails
+  because the collection is locked and could not be unlocked wraps it: the
+  up-front unlock in `ensureCollectionUnlocked` (which also names the
+  collection in the message), the re-unlock inside `withRelockRetry`, and a
+  collection still locked once the bounded retries are exhausted. The
+  underlying prompt failure is preserved as the wrapped cause; no exported
+  prompt-dismissed/timed-out sentinels (unexported-cause promotion pattern,
+  same as `errSessionBusUnavailable`).
+- **The prompt wait is ctx-bounded.** `PromptAndWait` (and the prompt-capable
+  calls `Unlock`, `LockItems`, `CreateItem`, `DeleteItem`) now take a
+  `context.Context`; store operations pass their ORIGINAL operation ctx —
+  deliberately not the `context.WithoutCancel` connection ctx — so a caller
+  deadline bounds the human-wait while in-flight D-Bus calls stay protected
+  from teardown. The internal 30s cap remains as an upper bound, created once
+  outside the receive loop (previously `time.After` inside the loop was reset
+  by every unrelated bus signal). A null prompt returns before the ctx check,
+  so best-effort cleanup calls with cancelled contexts still succeed on
+  passwordless keyrings.
+- **Nothing else was added, deliberately.** Evaluated and rejected:
+  prompter-presence probes (`org.gnome.keyring.SystemPrompter` is
+  activatable-but-unstartable on headless hosts with gcr installed, and
+  KWallet/KeePassXC never own that name — both directions misclassify);
+  password callbacks and programmatic master-password unlock via
+  `org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface` (gnome-only,
+  and hands the library a UX/credential-handling responsibility the caller
+  owns); library TTY prompting; and a New-time lock check (lock state is
+  per-operation and mutable; locked ≠ unavailable). The caller detects
+  `ErrCollectionLocked` via `errors.Is` and owns remediation messaging — and
+  must NOT fall back to another store, which would split credentials.
+- Validated live (Ubuntu 24.04 VM, gnome-keyring): headless + locked fails in
+  ~15ms with "prompt dismissed" (gnome-keyring dismisses immediately when no
+  prompter can be shown, with or without gcr installed); a real prompt on a
+  display still completes and unlocks; a 2s caller deadline aborts an
+  unanswered prompt at 2.003s. CI: new `ubuntu-24-gnome-keyring-locked`
+  target runs `TestKeychainLiveLockedCollection` against a password-protected
+  keyring (`gnome-keyring-daemon --login`) with the collection locked.
+
+---

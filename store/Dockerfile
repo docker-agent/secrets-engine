@@ -61,6 +61,15 @@ RUN --mount=type=bind,target=. \
     --mount=type=cache,target=/root/.cache/go-build \
     bash -c "set -euxo pipefail; /app/store/scripts/gnome-keyring"
 
+FROM ubuntu24 AS ubuntu-24-gnome-keyring-locked
+ENV CGO_ENABLED=0
+USER user
+WORKDIR /app
+RUN --mount=type=bind,target=. \
+    --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    bash -c "set -euxo pipefail; bash /app/store/scripts/gnome-keyring-locked"
+
 FROM ubuntu24 AS ubuntu-24-kdewallet
 ENV CGO_ENABLED=0
 USER user

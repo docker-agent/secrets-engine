@@ -64,6 +64,39 @@ daemon whether the Secret Service is registered and never touches your stored
 secrets. On macOS and Windows the check is a no-op (and `ctx` is unused). See
 [../docs/keychain/design.md](../docs/keychain/design.md) for details.
 
+### Locked collections (Linux)
+
+A reachable keychain can still hold a **locked** collection. This is the
+default state on headless Linux hosts with SSH key-only logins: there is no
+password for PAM to auto-unlock the login keyring with, so the collection comes
+up locked after every keyring-daemon restart.
+
+When a store operation encounters a locked collection it asks the Secret
+Service to unlock it. On a passwordless keyring that succeeds silently; on a
+password-protected keyring it opens the backend's unlock prompt. If that prompt
+cannot complete — it is dismissed (gnome-keyring does this immediately when no
+prompter can be shown, e.g. headless), times out, or the operation's context
+expires — the operation fails with an error matching
+`keychain.ErrCollectionLocked`:
+
+```go
+_, err := st.Get(ctx, id)
+if errors.Is(err, keychain.ErrCollectionLocked) {
+    // The collection still holds the user's credentials; it just needs to be
+    // unlocked. Tell the user how (e.g. log in to the desktop session, or
+    // `gnome-keyring-daemon --unlock`). Do NOT fall back to another store:
+    // writing new credentials elsewhere while the locked collection keeps the
+    // old ones would split credentials across two stores.
+}
+```
+
+The operation's `ctx` bounds the unlock-prompt wait, so a caller can put its
+own deadline on the "waiting for the user to type the keyring password" case;
+an internal cap (30s) always applies as an upper bound. `ErrCollectionLocked`
+is deliberately distinct from `ErrKeychainUnavailable`: unavailable means no
+keychain exists to use (fall back), locked means the keychain and credentials
+exist but need the user's help (surface remediation, don't fall back).
+
 ### Secrets
 
 The `keychain` assumes that any secret stored would conform to the `store.Secret`
