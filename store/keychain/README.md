@@ -66,36 +66,33 @@ secrets. On macOS and Windows the check is a no-op (and `ctx` is unused). See
 
 ### Locked collections (Linux)
 
-A reachable keychain can still hold a **locked** collection. This is the
-default state on headless Linux hosts with SSH key-only logins: there is no
-password for PAM to auto-unlock the login keyring with, so the collection comes
-up locked after every keyring-daemon restart.
+A reachable keychain can still hold a locked collection. This is the default
+state on headless Linux hosts with SSH key-only logins: PAM has no password to
+auto-unlock the login keyring, so it is locked after every keyring-daemon
+restart.
 
-When a store operation encounters a locked collection it asks the Secret
-Service to unlock it. On a passwordless keyring that succeeds silently; on a
-password-protected keyring it opens the backend's unlock prompt. If that prompt
-cannot complete — it is dismissed (gnome-keyring does this immediately when no
-prompter can be shown, e.g. headless), times out, or the operation's context
-expires — the operation fails with an error matching
-`keychain.ErrCollectionLocked`:
+A store operation that finds the collection locked asks the Secret Service to
+unlock it. On a passwordless keyring this succeeds silently. On a
+password-protected keyring it opens the backend's unlock prompt. If the prompt
+is dismissed (gnome-keyring does this immediately when no prompter can be
+shown), times out, or the operation's context expires, the operation fails
+with an error matching `keychain.ErrCollectionLocked`:
 
 ```go
 _, err := st.Get(ctx, id)
 if errors.Is(err, keychain.ErrCollectionLocked) {
-    // The collection still holds the user's credentials; it just needs to be
-    // unlocked. Tell the user how (e.g. log in to the desktop session, or
-    // `gnome-keyring-daemon --unlock`). Do NOT fall back to another store:
-    // writing new credentials elsewhere while the locked collection keeps the
-    // old ones would split credentials across two stores.
+    // The collection still holds the user's credentials. Tell the user how
+    // to unlock it, for example by logging in to the desktop session or
+    // running gnome-keyring-daemon --unlock. Do not fall back to another
+    // store; that would split credentials across stores.
 }
 ```
 
-The operation's `ctx` bounds the unlock-prompt wait, so a caller can put its
-own deadline on the "waiting for the user to type the keyring password" case;
-an internal cap (30s) always applies as an upper bound. `ErrCollectionLocked`
-is deliberately distinct from `ErrKeychainUnavailable`: unavailable means no
-keychain exists to use (fall back), locked means the keychain and credentials
-exist but need the user's help (surface remediation, don't fall back).
+The operation's `ctx` bounds the prompt wait, so a caller can set its own
+deadline; an internal 30 second cap always applies. Unavailable means there is
+no keychain to use, so fall back. Locked means the keychain and credentials
+exist but need the user's help, so surface the remediation and do not fall
+back.
 
 ### Secrets
 
