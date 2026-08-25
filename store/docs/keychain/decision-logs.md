@@ -176,8 +176,11 @@ Decisions:
   back to another store would split credentials across stores.
 - Validated live on an Ubuntu 24.04 VM: a headless locked operation fails in
   about 15ms with "prompt dismissed" (gnome-keyring dismisses immediately when
-  no prompter can start), an answered prompt on a display still works, and a
-  2s caller deadline aborts an unanswered prompt at 2s. A new
+  no prompter can start), and an answered prompt on a display still works. To
+  prove the caller's deadline is honored, a test probe with a deliberately
+  short 2 second context deadline aborted an unanswered prompt at 2 seconds.
+  Nothing changes for callers without a deadline: they still get the 30 second
+  cap, and gnome-keyring itself never times a prompt out. A new
   `ubuntu-24-gnome-keyring-locked` CI target runs
   `TestKeychainLiveLockedCollection` against a password-protected keyring with
   the collection locked.
