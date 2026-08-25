@@ -80,8 +80,8 @@ var ErrKeychainUnavailable = errors.New("keychain backend unavailable")
 // Unlike [ErrKeychainUnavailable], the collection exists and still holds the
 // user's credentials. Tell the user how to unlock it.
 //
-// Like the sentinels above, it is declared in the cross-platform file so
-// callers need no build tags; it only matches on Linux.
+// It is declared in the cross-platform file so callers can reference it
+// without build tags; it only matches on Linux.
 var ErrCollectionLocked = errors.New("keychain collection is locked")
 
 type (
