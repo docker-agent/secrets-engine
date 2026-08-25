@@ -95,45 +95,41 @@ On macOS and Windows the check is a no-op (`New` never returns
 
 ### Locked collections and the bounded unlock prompt
 
-A reachable backend can still hold a **locked** collection — the default state
-on headless hosts with SSH key-only logins, where PAM has no password to
-auto-unlock the login keyring with, so it relocks on every keyring-daemon
+A reachable backend can still hold a locked collection. This is the default
+state on headless hosts with SSH key-only logins: PAM has no password to
+auto-unlock the login keyring, so it is locked after every keyring-daemon
 restart.
 
-Every store operation checks the collection's lock state up front
+Every store operation checks the lock state up front
 (`ensureCollectionUnlocked`) and, when locked, issues a Secret Service
-`Unlock`. On a passwordless keyring that completes silently via the null
-prompt. On a password-protected keyring it opens the backend's unlock prompt,
-and that prompt wait is **bounded twice**:
+`Unlock`. On a passwordless keyring this completes silently via the null
+prompt. On a password-protected keyring it opens the backend's unlock prompt.
+The prompt wait is bounded twice:
 
-- by the operation's own `ctx` (deliberately the caller's original context,
-  not the `context.WithoutCancel` connection context: in-flight D-Bus calls
-  are protected from teardown, but waiting on a human is bounded by the
-  caller); and
-- by an internal 30s cap (`promptTimeout`), so a prompt nobody can ever answer
-  cannot block an operation forever even without a caller deadline.
+- by the operation's `ctx`. This is the caller's original context, not the
+  `context.WithoutCancel` connection context, so a caller deadline bounds the
+  wait for the user while in-flight D-Bus calls stay protected from teardown.
+- by an internal 30 second cap (`promptTimeout`), so a prompt nobody can
+  answer cannot block an operation forever.
 
-When the unlock fails — prompt dismissed, timed out, or ctx expired — the
-operation fails with an error wrapping the exported `ErrCollectionLocked`
-sentinel and naming the collection, with the underlying prompt failure
-preserved as the cause. The same wrapping applies inside the relock-retry loop
-(`withRelockRetry`) and when a collection is still locked after the bounded
-retries.
+When the unlock fails (prompt dismissed, timed out, or ctx expired), the
+operation returns an error wrapping the exported `ErrCollectionLocked`
+sentinel, naming the collection and keeping the prompt failure as the cause.
+The same wrapping applies in the relock-retry loop (`withRelockRetry`) and
+when a collection is still locked after the bounded retries.
 
-Empirically (validated live on Ubuntu 24.04, gnome-keyring): on a headless
-host the unlock prompt does not hang — gnome-keyring completes it as
-*dismissed* within milliseconds when no prompter can be shown (whether or not
-the gcr prompter is installed and D-Bus-activatable), so the locked error
-surfaces in ~15ms. The 30s cap and ctx bound cover the remaining case of a
-live prompter with an absent user.
+Validated live on Ubuntu 24.04 with gnome-keyring: on a headless host the
+unlock prompt does not hang. gnome-keyring dismisses it within milliseconds
+when no prompter can start, so the locked error surfaces in about 15ms. The
+30 second cap and the ctx bound cover the remaining case of a live prompter
+with nobody answering.
 
-Deliberately **not** built (see the decision log): prompter-presence probes
-(`org.gnome.keyring.SystemPrompter` is activatable-but-unstartable on headless
-hosts with gcr installed, and KWallet/KeePassXC never own that name — both
-directions misclassify), password callbacks, programmatic master-password
-unlock (`org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface`), and
-library-owned TTY prompting. The library reports the locked state reliably;
-the caller owns remediation. `ErrCollectionLocked` also must not be treated as
-"unavailable, fall back": the locked collection still holds the user's
-credentials, and silently writing new ones to a fallback store would split
-credentials across two stores.
+Deliberately not built (see the decision log): prompter-presence probes (the
+`org.gnome.keyring.SystemPrompter` name is activatable but unstartable on
+headless hosts with gcr installed, and KWallet/KeePassXC never own it, so a
+probe misclassifies in both directions), password callbacks, master-password
+unlock via `InternalUnsupportedGuiltRiddenInterface`, and TTY prompting in
+the library. The library reports the locked state; the caller owns the
+remediation message. A locked collection must not be treated as unavailable;
+it still holds the user's credentials, and falling back to another store
+would split credentials across stores.
