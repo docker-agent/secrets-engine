@@ -92,3 +92,44 @@ collection exists, so a reachable-but-uninitialized keyring still passes `New`
 and surfaces `ErrNoDefaultCollection` lazily on the first operation, as before.
 On macOS and Windows the check is a no-op (`New` never returns
 `ErrKeychainUnavailable` there).
+
+### Locked collections and the bounded unlock prompt
+
+A reachable backend can still hold a locked collection. This is the default
+state on headless hosts with SSH key-only logins: PAM has no password to
+auto-unlock the login keyring, so it is locked after every keyring-daemon
+restart.
+
+Every store operation checks the lock state up front
+(`ensureCollectionUnlocked`) and, when locked, issues a Secret Service
+`Unlock`. On a passwordless keyring this completes silently via the null
+prompt. On a password-protected keyring it opens the backend's unlock prompt.
+The prompt wait is bounded twice:
+
+- by the operation's `ctx`. This is the caller's original context, not the
+  `context.WithoutCancel` connection context, so a caller deadline bounds the
+  wait for the user while in-flight D-Bus calls stay protected from teardown.
+- by an internal 30 second cap (`promptTimeout`), so a prompt nobody can
+  answer cannot block an operation forever.
+
+When the unlock fails (prompt dismissed, timed out, or ctx expired), the
+operation returns an error wrapping the exported `ErrCollectionLocked`
+sentinel, naming the collection and keeping the prompt failure as the cause.
+The same wrapping applies in the relock-retry loop (`withRelockRetry`) and
+when a collection is still locked after the bounded retries.
+
+Validated live on Ubuntu 24.04 with gnome-keyring: on a headless host the
+unlock prompt does not hang. gnome-keyring dismisses it within milliseconds
+when no prompter can start, so the locked error surfaces in about 15ms. The
+30 second cap and the ctx bound cover the remaining case of a live prompter
+with nobody answering.
+
+Deliberately not built (see the decision log): prompter-presence probes (the
+`org.gnome.keyring.SystemPrompter` name is activatable but unstartable on
+headless hosts with gcr installed, and KWallet/KeePassXC never own it, so a
+probe misclassifies in both directions), password callbacks, master-password
+unlock via `InternalUnsupportedGuiltRiddenInterface`, and TTY prompting in
+the library. The library reports the locked state; the caller owns the
+remediation message. A locked collection must not be treated as unavailable;
+it still holds the user's credentials, and falling back to another store
+would split credentials across stores.

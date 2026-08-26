@@ -412,8 +412,14 @@ const ReplaceBehaviorDoNotReplace = 0
 // ReplaceBehaviorReplace
 const ReplaceBehaviorReplace = 1
 
-// CreateItem
-func (s *SecretService) CreateItem(collection dbus.ObjectPath, properties map[string]dbus.Variant, secret Secret, replaceBehavior ReplaceBehavior) (item dbus.ObjectPath, err error) {
+// CreateItem creates an item in the collection; ctx bounds the prompt wait.
+func (s *SecretService) CreateItem(
+	ctx context.Context,
+	collection dbus.ObjectPath,
+	properties map[string]dbus.Variant,
+	secret Secret,
+	replaceBehavior ReplaceBehavior,
+) (item dbus.ObjectPath, err error) {
 	var replace bool
 	switch replaceBehavior {
 	case ReplaceBehaviorDoNotReplace:
@@ -431,15 +437,15 @@ func (s *SecretService) CreateItem(collection dbus.ObjectPath, properties map[st
 	if err != nil {
 		return "", fmt.Errorf("failed to create item: %w", err)
 	}
-	_, err = s.PromptAndWait(prompt)
+	_, err = s.PromptAndWait(ctx, prompt)
 	if err != nil {
 		return "", err
 	}
 	return item, nil
 }
 
-// DeleteItem
-func (s *SecretService) DeleteItem(item dbus.ObjectPath) (err error) {
+// DeleteItem deletes an item; ctx bounds the prompt wait.
+func (s *SecretService) DeleteItem(ctx context.Context, item dbus.ObjectPath) (err error) {
 	var prompt dbus.ObjectPath
 	err = s.Obj(item).
 		Call("org.freedesktop.Secret.Item.Delete", NilFlags).
@@ -447,7 +453,7 @@ func (s *SecretService) DeleteItem(item dbus.ObjectPath) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to delete item: %w", err)
 	}
-	_, err = s.PromptAndWait(prompt)
+	_, err = s.PromptAndWait(ctx, prompt)
 	if err != nil {
 		return err
 	}
@@ -501,8 +507,8 @@ func (s *SecretService) GetSecret(item dbus.ObjectPath, session Session) (secret
 // NullPrompt
 const NullPrompt = "/"
 
-// Unlock
-func (s *SecretService) Unlock(items []dbus.ObjectPath) (err error) {
+// Unlock unlocks the given collections or items; ctx bounds the prompt wait.
+func (s *SecretService) Unlock(ctx context.Context, items []dbus.ObjectPath) (err error) {
 	var dummy []dbus.ObjectPath
 	var prompt dbus.ObjectPath
 	err = s.ServiceObj().
@@ -511,15 +517,15 @@ func (s *SecretService) Unlock(items []dbus.ObjectPath) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to unlock items: %w", err)
 	}
-	_, err = s.PromptAndWait(prompt)
+	_, err = s.PromptAndWait(ctx, prompt)
 	if err != nil {
 		return fmt.Errorf("failed to prompt: %w", err)
 	}
 	return nil
 }
 
-// LockItems
-func (s *SecretService) LockItems(items []dbus.ObjectPath) (err error) {
+// LockItems locks the given collections or items; ctx bounds the prompt wait.
+func (s *SecretService) LockItems(ctx context.Context, items []dbus.ObjectPath) (err error) {
 	var dummy []dbus.ObjectPath
 	var prompt dbus.ObjectPath
 	err = s.ServiceObj().
@@ -528,7 +534,7 @@ func (s *SecretService) LockItems(items []dbus.ObjectPath) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to lock items: %w", err)
 	}
-	_, err = s.PromptAndWait(prompt)
+	_, err = s.PromptAndWait(ctx, prompt)
 	if err != nil {
 		return fmt.Errorf("failed to prompt: %w", err)
 	}
@@ -545,8 +551,15 @@ func (p PromptDismissedError) Error() string {
 	return p.err.Error()
 }
 
+// promptTimeout caps how long PromptAndWait waits for a prompt to complete.
+const promptTimeout = 30 * time.Second
+
+// PromptAndWait displays the prompt and blocks until it completes, is
+// dismissed, ctx is done, or promptTimeout elapses. A NullPrompt returns
+// immediately.
+//
 // PromptAndWait is NOT thread-safe.
-func (s *SecretService) PromptAndWait(prompt dbus.ObjectPath) (paths *dbus.Variant, err error) {
+func (s *SecretService) PromptAndWait(ctx context.Context, prompt dbus.ObjectPath) (paths *dbus.Variant, err error) {
 	if prompt == NullPrompt {
 		return nil, nil
 	}
@@ -554,6 +567,8 @@ func (s *SecretService) PromptAndWait(prompt dbus.ObjectPath) (paths *dbus.Varia
 	if call.Err != nil {
 		return nil, fmt.Errorf("failed to prompt: %w", call.Err)
 	}
+	// created once, outside the loop, so unrelated signals cannot reset it
+	timeout := time.After(promptTimeout)
 	for {
 		var result PromptCompletedResult
 		select {
@@ -575,7 +590,9 @@ func (s *SecretService) PromptAndWait(prompt dbus.ObjectPath) (paths *dbus.Varia
 				return nil, PromptDismissedError{errors.New("prompt dismissed")}
 			}
 			return &result.Paths, nil
-		case <-time.After(30 * time.Second):
+		case <-ctx.Done():
+			return nil, fmt.Errorf("prompt aborted: %w", ctx.Err())
+		case <-timeout:
 			return nil, errors.New("prompt timed out")
 		}
 	}

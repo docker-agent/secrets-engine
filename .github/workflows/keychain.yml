@@ -21,6 +21,7 @@ jobs:
         subtest:
           - fedora-43-gnome-keyring
           - ubuntu-24-gnome-keyring
+          - ubuntu-24-gnome-keyring-locked
           # disabled kdewallet tests since it prompts for a password in a
           # headless environment... need to still fix this
           # - fedora-43-kdewallet

@@ -64,6 +64,36 @@ daemon whether the Secret Service is registered and never touches your stored
 secrets. On macOS and Windows the check is a no-op (and `ctx` is unused). See
 [../docs/keychain/design.md](../docs/keychain/design.md) for details.
 
+### Locked collections (Linux)
+
+A reachable keychain can still hold a locked collection. This is the default
+state on headless Linux hosts with SSH key-only logins: PAM has no password to
+auto-unlock the login keyring, so it is locked after every keyring-daemon
+restart.
+
+A store operation that finds the collection locked asks the Secret Service to
+unlock it. On a passwordless keyring this succeeds silently. On a
+password-protected keyring it opens the backend's unlock prompt. If the prompt
+is dismissed (gnome-keyring does this immediately when no prompter can be
+shown), times out, or the operation's context expires, the operation fails
+with an error matching `keychain.ErrCollectionLocked`:
+
+```go
+_, err := st.Get(ctx, id)
+if errors.Is(err, keychain.ErrCollectionLocked) {
+    // The collection still holds the user's credentials. Tell the user how
+    // to unlock it, for example by logging in to the desktop session or
+    // running gnome-keyring-daemon --unlock. Do not fall back to another
+    // store; that would split credentials across stores.
+}
+```
+
+The operation's `ctx` bounds the prompt wait, so a caller can set its own
+deadline; an internal 30 second cap always applies. Unavailable means there is
+no keychain to use, so fall back. Locked means the keychain and credentials
+exist but need the user's help, so surface the remediation and do not fall
+back.
+
 ### Secrets
 
 The `keychain` assumes that any secret stored would conform to the `store.Secret`

@@ -1,0 +1,91 @@
+#!/bin/bash
+
+# Locked-collection variant of the gnome-keyring harness (see ./gnome-keyring).
+#
+# Instead of seeding a passwordless 'login' keyring, it creates a
+# PASSWORD-PROTECTED one the way PAM does (gnome-keyring-daemon --login reads
+# the password from stdin), so locking the collection makes it genuinely
+# require the password to unlock. The container has no display and no prompter,
+# so the unlock prompt can never be answered — exactly the headless situation
+# hit by downstream consumers — and the gated live test asserts store operations
+# fail fast with ErrCollectionLocked instead of hanging.
+
+set -euxo pipefail
+
+if test -z $(command -v gnome-keyring-daemon); then
+    echo "gnome-keyring-daemon is not installed"
+    exit 1
+fi
+
+if test -z $(command -v dbus-daemon); then
+    echo "dbus-daemon is not installed"
+    exit 1
+fi
+
+mkdir -p ~/.local/share/keyrings
+
+# Start D-Bus session (dbus must be installed)
+export DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --print-address --fork)
+
+# PAM-style login mode: read the password from stdin and create the
+# password-protected 'login' keyring (unlocked for now; the test locks it).
+# The daemon prints GNOME_KEYRING_CONTROL=<dir>; eval + export it so the
+# --start below attaches to THIS daemon instead of spawning a second one that
+# never learned the login password (without XDG_RUNTIME_DIR each invocation
+# would otherwise mint its own control directory under ~/.cache).
+eval "$(echo -n 'test-keyring-password' | gnome-keyring-daemon --daemonize --login)"
+export GNOME_KEYRING_CONTROL
+
+gnome-keyring-daemon --start --components=secrets
+
+# Wait up to 5 seconds for org.freedesktop.secrets to appear on D-Bus
+timeout=5000
+interval=100
+elapsed=0
+
+while ! gdbus call --session \
+  --dest org.freedesktop.DBus \
+  --object-path /org/freedesktop/DBus \
+  --method org.freedesktop.DBus.GetNameOwner \
+  org.freedesktop.secrets >/dev/null 2>&1; do
+
+    sleep 0.1
+    elapsed=$((elapsed + interval))
+    if (( elapsed >= timeout )); then
+        echo "❌ Timeout waiting for gnome-keyring-daemon to register org.freedesktop.secrets"
+        exit 1
+    fi
+done
+
+owner=$(gdbus call --session \
+  --dest org.freedesktop.DBus \
+  --object-path /org/freedesktop/DBus \
+  --method org.freedesktop.DBus.GetNameOwner \
+  org.freedesktop.secrets | awk -F"'" '{print $2}')
+
+if test -v $owner; then
+    echo "there is no owner of the org.freedesktop.secrets API"
+    exit 1
+fi
+
+pid=$(gdbus call --session \
+  --dest org.freedesktop.DBus \
+  --object-path /org/freedesktop/DBus \
+  --method org.freedesktop.DBus.GetConnectionUnixProcessID \
+  "$owner" | awk '{print $2}' | tr -d ',)')
+
+if test -v $pid; then
+    echo "there is no registered org.freedesktop.secrets daemon"
+    exit 1
+fi
+
+exe=$(readlink -f /proc/$pid/exe)
+
+if [[ "$exe" == *gnome-keyring-daemon* ]]; then
+    echo "dbus org.freedesktop.secrets is using gnome-keyring-daemon"
+    TEST_KEYCHAIN_LOCKED_COLLECTION=1 go test -v -count=1 -run TestKeychainLiveLockedCollection ./store/keychain/
+    exit 0
+fi
+
+echo "dbus org.freedesktop.secrets is not using gnome-keyring-daemon. Using ${exe}"
+exit 1

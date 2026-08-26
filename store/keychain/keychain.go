@@ -71,6 +71,19 @@ var ErrNoDefaultCollection = errors.New("no default keychain collection availabl
 // ErrNoDefaultCollection lazily on the first operation, exactly as before.
 var ErrKeychainUnavailable = errors.New("keychain backend unavailable")
 
+// ErrCollectionLocked is returned by store operations when the keychain
+// collection is locked and could not be unlocked: the unlock prompt was
+// dismissed (gnome-keyring does this immediately when no prompter can be
+// shown, e.g. on a headless host), timed out, or was aborted by the
+// operation's context. Detect it with [errors.Is].
+//
+// Unlike [ErrKeychainUnavailable], the collection exists and still holds the
+// user's credentials. Tell the user how to unlock it.
+//
+// It is declared in the cross-platform file so callers can reference it
+// without build tags; it only matches on Linux.
+var ErrCollectionLocked = errors.New("keychain collection is locked")
+
 type (
 	Option            interface{ apply(any) error }
 	optionFunc[K any] func(K) error
