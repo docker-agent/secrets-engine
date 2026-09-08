@@ -84,6 +84,15 @@ var ErrKeychainUnavailable = errors.New("keychain backend unavailable")
 // without build tags; it only matches on Linux.
 var ErrCollectionLocked = errors.New("keychain collection is locked")
 
+// ErrDuplicateItem is returned by Save when an item with the same ID already
+// exists in the keychain. Only macOS refuses to overwrite on Save; Windows and
+// Linux update the existing item in place and never return it. Use Upsert to
+// overwrite an existing item. Detect it with [errors.Is].
+//
+// It is declared in the cross-platform file so callers can reference it
+// without build tags; it only matches on macOS.
+var ErrDuplicateItem = errors.New("keychain item already exists")
+
 type (
 	Option            interface{ apply(any) error }
 	optionFunc[K any] func(K) error

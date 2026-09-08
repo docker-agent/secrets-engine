@@ -54,6 +54,18 @@ func TestWrapKeychainErrors(t *testing.T) {
 		assert.ErrorContains(t, err, lockedKeychainHint)
 	})
 
+	t.Run("duplicate error from RunE carries the hint", func(t *testing.T) {
+		dup := fmt.Errorf("save 'foo': %w", keychain.ErrDuplicateItem)
+		cmd := wrapKeychainErrors(&cobra.Command{
+			RunE: func(*cobra.Command, []string) error { return dup },
+		})
+		err := cmd.RunE(cmd, nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, keychain.ErrDuplicateItem)
+		assert.ErrorContains(t, err, "save 'foo'")
+		assert.ErrorContains(t, err, duplicateItemHint)
+	})
+
 	t.Run("other errors pass through unchanged", func(t *testing.T) {
 		plain := errors.New("boom")
 		cmd := wrapKeychainErrors(&cobra.Command{
