@@ -47,5 +47,5 @@ func ListCommand() *cobra.Command {
 			return nil
 		},
 	}
-	return cmd
+	return wrapKeychainErrors(cmd)
 }

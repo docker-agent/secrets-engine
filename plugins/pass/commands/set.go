@@ -110,7 +110,7 @@ func SetCommand() *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringArrayVar(&opts.metadata, "metadata", nil, "Non-sensitive key=value metadata (repeatable)")
 	flags.BoolVarP(&opts.force, "force", "f", false, "Overwrite existing secret if it already exists")
-	return cmd
+	return wrapKeychainErrors(cmd)
 }
 
 func parseMetadataFlags(raw []string) (map[string]string, error) {

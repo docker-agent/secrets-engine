@@ -50,5 +50,5 @@ func GetCommand() *cobra.Command {
 			return nil
 		},
 	}
-	return cmd
+	return wrapKeychainErrors(cmd)
 }
