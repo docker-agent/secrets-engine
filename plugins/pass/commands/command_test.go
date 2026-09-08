@@ -172,10 +172,45 @@ func Test_RmCommand(t *testing.T) {
 	})
 	t.Run("store error", func(t *testing.T) {
 		errRemove := errors.New("remove error")
-		mock := teststore.NewMockStore(teststore.WithStoreDeleteErr(errRemove))
+		mock := teststore.NewMockStore(
+			teststore.WithStore(map[store.ID]store.Secret{
+				store.MustParseID("foo"): pass.NewPassValue([]byte("bar")),
+			}),
+			teststore.WithStoreDeleteErr(errRemove),
+		)
 		out, err := execute(t, RmCommand(), mock, "foo")
 		assert.ErrorIs(t, err, errRemove)
 		assert.Equal(t, "ERR: foo: remove error\nError: "+errRemove.Error()+"\n", out)
+	})
+	t.Run("missing secret errors", func(t *testing.T) {
+		mock := teststore.NewMockStore()
+		out, err := execute(t, RmCommand(), mock, "foo")
+		assert.ErrorIs(t, err, store.ErrCredentialNotFound)
+		assert.Equal(t, "ERR: foo: secret not found\nError: foo: secret not found\n", out)
+	})
+	t.Run("missing secret among existing ones", func(t *testing.T) {
+		mock := teststore.NewMockStore(teststore.WithStore(map[store.ID]store.Secret{
+			store.MustParseID("foo"): pass.NewPassValue([]byte("bar")),
+		}))
+		out, err := execute(t, RmCommand(), mock, "foo", "baz")
+		assert.ErrorIs(t, err, store.ErrCredentialNotFound)
+		assert.Equal(t, "ERR: baz: secret not found\nRM: foo\nError: baz: secret not found\n", out)
+		l, err := mock.GetAllMetadata(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, l)
+	})
+	t.Run("metadata listing error", func(t *testing.T) {
+		errList := errors.New("list error")
+		mock := teststore.NewMockStore(teststore.WithStoreGetAllErr(errList))
+		out, err := execute(t, RmCommand(), mock, "foo")
+		assert.ErrorIs(t, err, errList)
+		assert.Equal(t, "Error: "+errList.Error()+"\n", out)
+	})
+	t.Run("--all with empty store", func(t *testing.T) {
+		mock := teststore.NewMockStore()
+		out, err := execute(t, RmCommand(), mock, "--all")
+		assert.NoError(t, err)
+		assert.Empty(t, out)
 	})
 	t.Run("invalid id", func(t *testing.T) {
 		mock := teststore.NewMockStore()

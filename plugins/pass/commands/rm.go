@@ -76,18 +76,23 @@ func validateArgs(args []string, opts rmOpts) ([]store.ID, error) {
 }
 
 func runRm(ctx context.Context, out io.Writer, kc store.Store, idList []store.ID, opts rmOpts) error {
+	existing, err := kc.GetAllMetadata(ctx)
+	if err != nil {
+		return err
+	}
 	if opts.All && len(idList) == 0 {
-		l, err := kc.GetAllMetadata(ctx)
-		if err != nil {
-			return err
-		}
-		for k := range l {
+		for k := range existing {
 			idList = append(idList, k)
 		}
 	}
 	slices.SortFunc(idList, func(a, b store.ID) int { return strings.Compare(a.String(), b.String()) })
 	var errs []error
 	for _, id := range idList {
+		if _, ok := existing[id]; !ok {
+			errs = append(errs, fmt.Errorf("%s: %w", id, store.ErrCredentialNotFound))
+			fmt.Fprintf(out, "ERR: %s: %s\n", id, store.ErrCredentialNotFound)
+			continue
+		}
 		if err := kc.Delete(ctx, id); err != nil {
 			errs = append(errs, err)
 			fmt.Fprintf(out, "ERR: %s: %s\n", id, err)
