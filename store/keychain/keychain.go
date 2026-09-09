@@ -27,70 +27,24 @@ import (
 var _ store.Store = &keychainStore[store.Secret]{}
 
 // ErrNoDefaultCollection is returned when the secret service has no usable
-// default collection (no 'login' collection and no collection assigned to the
-// 'default' alias). This typically happens on headless hosts where the keyring
-// has not been initialized.
-//
-// NOTE: this condition is currently specific to the Linux keyring (the
-// freedesktop Secret Service). macOS and Windows have no equivalent "default
-// collection" concept, so the keychain store never returns this error on those
-// platforms. The sentinel is nonetheless declared here, in the cross-platform
-// file (rather than the Linux-specific one), so that platform-agnostic callers
-// can reference it on every platform without build tags. On non-Linux platforms
-// it simply never matches.
-//
-// It is exported so callers can use [errors.Is] to detect the absence of usable
-// keychain infrastructure and fall back gracefully, rather than relying on
-// fragile error message comparisons.
+// default collection, typically on headless hosts with an uninitialized
+// keyring. Linux-only; declared here so callers can reference it without
+// build tags.
 var ErrNoDefaultCollection = errors.New("no default keychain collection available")
 
-// ErrKeychainUnavailable is returned by New when the keychain backend cannot
-// be reached at construction time, so no keychain operation could ever
-// succeed. Callers can use [errors.Is] to detect this eagerly and fall back to
-// another store instead of discovering the failure deep inside a later Get,
-// Save, Delete, Filter or GetAllMetadata call.
-//
-// On Linux it covers both failure modes of the freedesktop Secret Service:
-//   - there is no D-Bus session bus at all (for example WSL, a headless host,
-//     or DBUS_SESSION_BUS_ADDRESS unset), so the session bus cannot be dialed; or
-//   - the session bus exists but no process owns the org.freedesktop.secrets
-//     name (no gnome-keyring, kwallet or other Secret Service daemon running).
-//
-// NOTE: like ErrNoDefaultCollection this condition is currently specific to the
-// Linux keyring. macOS and Windows have no equivalent unreachable-backend
-// concept, so New never returns this error on those platforms. The sentinel is
-// declared here, in the cross-platform file (rather than the Linux-specific
-// one), so platform-agnostic callers can reference it on every platform without
-// build tags; on non-Linux platforms it simply never matches.
-//
-// It is DISTINCT from ErrNoDefaultCollection: ErrKeychainUnavailable means the
-// backend itself is unreachable, whereas ErrNoDefaultCollection means the
-// backend IS reachable but has no usable default collection. The eager
-// availability check deliberately does not assert that a collection exists, so
-// a reachable-but-uninitialized keyring still passes New and surfaces
-// ErrNoDefaultCollection lazily on the first operation, exactly as before.
+// ErrKeychainUnavailable is returned by New when the keychain backend is
+// unreachable (no D-Bus session bus, or no Secret Service daemon), as opposed
+// to [ErrNoDefaultCollection] where the backend is reachable. Linux-only.
 var ErrKeychainUnavailable = errors.New("keychain backend unavailable")
 
 // ErrCollectionLocked is returned by store operations when the keychain
-// collection is locked and could not be unlocked: the unlock prompt was
-// dismissed (gnome-keyring does this immediately when no prompter can be
-// shown, e.g. on a headless host), timed out, or was aborted by the
-// operation's context. Detect it with [errors.Is].
-//
-// Unlike [ErrKeychainUnavailable], the collection exists and still holds the
-// user's credentials. Tell the user how to unlock it.
-//
-// It is declared in the cross-platform file so callers can reference it
-// without build tags; it only matches on Linux.
+// collection is locked and could not be unlocked (prompt dismissed, timed out,
+// or canceled). The collection still holds the user's credentials. Linux-only.
 var ErrCollectionLocked = errors.New("keychain collection is locked")
 
 // ErrDuplicateItem is returned by Save when an item with the same ID already
-// exists in the keychain. Only macOS refuses to overwrite on Save; Windows and
-// Linux update the existing item in place and never return it. Use Upsert to
-// overwrite an existing item. Detect it with [errors.Is].
-//
-// It is declared in the cross-platform file so callers can reference it
-// without build tags; it only matches on macOS.
+// exists; use Upsert to overwrite. macOS-only: Windows and Linux update the
+// existing item in place.
 var ErrDuplicateItem = errors.New("keychain item already exists")
 
 type (
