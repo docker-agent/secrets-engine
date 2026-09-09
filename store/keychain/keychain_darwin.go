@@ -312,6 +312,8 @@ func mapKeychainError(err error) error {
 		return store.ErrCredentialNotFound
 	case kc.ErrorAuthFailed.Error():
 		return ErrAuthFailed
+	case kc.ErrorDuplicateItem.Error():
+		return ErrDuplicateItem
 	}
 	return err
 }

@@ -25,8 +25,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	kc "github.com/docker/secrets-engine/store/keychain/internal/go-keychain"
-
 	"github.com/docker/secrets-engine/store"
 	"github.com/docker/secrets-engine/store/mocks"
 )
@@ -224,7 +222,7 @@ func TestUpsert(t *testing.T) {
 		require.NoError(t, ks.Save(t.Context(), id, secret))
 
 		err := ks.Save(t.Context(), id, secret)
-		require.ErrorIs(t, err, kc.ErrorDuplicateItem)
+		require.ErrorIs(t, err, ErrDuplicateItem)
 	})
 }
 

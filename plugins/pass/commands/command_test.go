@@ -26,6 +26,7 @@ import (
 	pass "github.com/docker/secrets-engine/plugins/pass/store"
 	"github.com/docker/secrets-engine/plugins/pass/teststore"
 	"github.com/docker/secrets-engine/store"
+	"github.com/docker/secrets-engine/store/keychain"
 	"github.com/docker/secrets-engine/x/secrets"
 )
 
@@ -100,6 +101,15 @@ func Test_SetCommand(t *testing.T) {
 		errInvalidID := secrets.ErrInvalidID{ID: "/foo"}
 		assert.ErrorIs(t, err, errInvalidID)
 		assert.Equal(t, "Error: "+errInvalidID.Error()+"\n", out)
+	})
+	t.Run("existing secret hints --force", func(t *testing.T) {
+		mock := teststore.NewMockStore(teststore.WithStore(map[store.ID]store.Secret{
+			store.MustParseID("foo"): pass.NewPassValue([]byte("old")),
+		}))
+		out, err := execute(t, SetCommand(), mock, "foo=new")
+		assert.ErrorIs(t, err, keychain.ErrDuplicateItem)
+		assert.Equal(t, "Error: keychain item already exists\n\n"+duplicateItemHint+"\n", out)
+		assertStoredValue(t, mock, "old")
 	})
 	t.Run("--force overwrites existing secret", func(t *testing.T) {
 		// Make Save return an error so the test fails if --force does not

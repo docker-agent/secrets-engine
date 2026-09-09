@@ -23,13 +23,11 @@ import (
 	"github.com/docker/secrets-engine/store/keychain"
 )
 
-// lockedKeychainHint points at the unlock rather than another store: the
-// secrets still exist in the locked collection.
 const lockedKeychainHint = "Unlock the keychain and retry: log in to the desktop session, " +
 	"or run gnome-keyring-daemon --unlock on a headless host."
 
-// wrapKeychainErrors adds lockedKeychainHint to locked-keychain errors
-// returned by cmd's PreRunE and RunE.
+const duplicateItemHint = "Use --force to overwrite the existing secret."
+
 func wrapKeychainErrors(cmd *cobra.Command) *cobra.Command {
 	if pre := cmd.PreRunE; pre != nil {
 		cmd.PreRunE = func(c *cobra.Command, args []string) error {
@@ -47,6 +45,9 @@ func wrapKeychainErrors(cmd *cobra.Command) *cobra.Command {
 func withKeychainHint(err error) error {
 	if errors.Is(err, keychain.ErrCollectionLocked) {
 		return fmt.Errorf("%w\n\n%s", err, lockedKeychainHint)
+	}
+	if errors.Is(err, keychain.ErrDuplicateItem) {
+		return fmt.Errorf("%w\n\n%s", err, duplicateItemHint)
 	}
 	return err
 }

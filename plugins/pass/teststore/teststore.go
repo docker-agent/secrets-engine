@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/docker/secrets-engine/store"
+	"github.com/docker/secrets-engine/store/keychain"
 )
 
 type Option func(m *MockStore)
@@ -128,6 +129,9 @@ func (m *MockStore) Save(_ context.Context, id store.ID, secret store.Secret) er
 	defer m.lock.Unlock()
 	if m.errSave != nil {
 		return m.errSave
+	}
+	if _, exists := m.store[id]; exists {
+		return keychain.ErrDuplicateItem
 	}
 
 	m.store[id] = secret
