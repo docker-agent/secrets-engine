@@ -333,7 +333,7 @@ func (s *SecretService) OpenSession(mode AuthenticationMode) (session *Session, 
 		}
 		session.Private = private
 		session.Public = public
-		sessionAlgorithmInput = dbus.MakeVariant(public.Bytes()) // math/big.Int.Bytes is big endian
+		sessionAlgorithmInput = dbus.MakeVariant(group.encode(public))
 	default:
 		return nil, fmt.Errorf("unknown authentication mode %v", mode)
 	}

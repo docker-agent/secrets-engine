@@ -61,22 +61,21 @@ func rfc2409SecondOakleyGroup() *dhGroup {
 	}
 }
 
+// encode returns v big-endian, zero-padded to the group prime size (128 bytes).
+// The Secret Service peer requires this fixed length for both the public key
+// and the shared secret; big.Int.Bytes strips leading zeros.
+func (group *dhGroup) encode(v *big.Int) []byte {
+	buf := make([]byte, (group.p.BitLen()+7)/8)
+	v.FillBytes(buf)
+	return buf
+}
+
 func (group *dhGroup) keygenHKDFSHA256AES128(theirPublic, myPrivate *big.Int) ([]byte, error) {
 	sharedSecret, err := group.diffieHellman(theirPublic, myPrivate)
 	if err != nil {
 		return nil, err
 	}
-	// The Secret Service peer derives the key over the shared secret encoded as
-	// a fixed-length big-endian value matching the group prime size (128 bytes
-	// for the 1024-bit Second Oakley Group). big.Int.Bytes() returns the
-	// minimal encoding and strips leading zero bytes, so when the shared secret
-	// happens to have one or more leading zero bytes (~1/256 of sessions per
-	// byte) the HKDF input would be shorter than the peer's, deriving a
-	// different AES key. That mismatch makes the keyring reject the item with
-	// "the secret was transferred or encrypted in an invalid way". FillBytes
-	// left-pads with zeros so both sides agree on the input.
-	sharedSecretBytes := make([]byte, (group.p.BitLen()+7)/8)
-	sharedSecret.FillBytes(sharedSecretBytes)
+	sharedSecretBytes := group.encode(sharedSecret)
 	defer clear(sharedSecretBytes)
 
 	r := hkdf.New(sha256.New, sharedSecretBytes, nil, nil)
