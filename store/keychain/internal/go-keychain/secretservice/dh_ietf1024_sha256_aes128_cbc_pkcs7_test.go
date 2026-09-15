@@ -1,6 +1,7 @@
 package secretservice
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"io"
 	"math/big"
@@ -34,6 +35,77 @@ func TestKeygen(t *testing.T) {
 	theirKey, err := group.keygenHKDFSHA256AES128(myPublic, theirPrivate)
 	require.NoError(t, err)
 	require.Equal(t, myKey, theirKey)
+}
+
+func TestEncodePadsLeadingZero(t *testing.T) {
+	group := rfc2409SecondOakleyGroup()
+
+	public := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 1016), big.NewInt(1))
+	require.Len(t, public.Bytes(), 127)
+
+	got := group.encode(public)
+	require.Len(t, got, 128)
+	require.Equal(t, byte(0), got[0])
+	require.Equal(t, public.Bytes(), got[1:])
+	require.Equal(t, 0, public.Cmp(new(big.Int).SetBytes(got)))
+}
+
+func FuzzEncode(f *testing.F) {
+	group := rfc2409SecondOakleyGroup()
+	f.Add([]byte{})
+	f.Add([]byte{0})
+	f.Add([]byte{2})
+	f.Add(new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 1016), big.NewInt(1)).Bytes())
+	f.Add(group.pMinus1.Bytes())
+	f.Add(bytes.Repeat([]byte{0xff}, 128))
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		v := new(big.Int).Mod(new(big.Int).SetBytes(raw), group.p)
+		got := group.encode(v)
+		require.Len(t, got, 128)
+		require.Equal(t, 0, v.Cmp(new(big.Int).SetBytes(got)))
+		minimal := v.Bytes()
+		pad := len(got) - len(minimal)
+		require.Equal(t, make([]byte, pad), got[:pad])
+		require.Equal(t, minimal, got[pad:])
+	})
+}
+
+func FuzzDHExchange(f *testing.F) {
+	group := rfc2409SecondOakleyGroup()
+	//nolint:lll
+	privateWithShortPublic, _ := new(big.Int).SetString("6d32ef111c81963d9b32ba129a6df82d3fe4cfeac67943bf828185e6cb74c8af1bbbb92bceb188e6a3d3b09bff44aefac0ad5fd1957a87c4e94e29dae935b0878c1bf509c40b60deedb4621a710ae24d012479795556b82bb9827ed8a4cf6365d7931307e07e7bb3adf7f1f1aca78d0149f79e45630ee0fe1a9dc29f91596992", 16)
+	f.Add([]byte{1}, []byte{2})
+	f.Add(privateWithShortPublic.Bytes(), []byte{1})
+	f.Add([]byte{1}, privateWithShortPublic.Bytes())
+	f.Add(privateWithShortPublic.Bytes(), new(big.Int).Sub(group.pMinus1, bigOne).Bytes())
+	f.Fuzz(func(t *testing.T, ourRaw, theirRaw []byte) {
+		ourPrivate, ourPublic := fuzzKeypair(t, group, ourRaw)
+		theirPrivate, theirPublic := fuzzKeypair(t, group, theirRaw)
+
+		ourWire := group.encode(ourPublic)
+		theirWire := group.encode(theirPublic)
+		require.Len(t, ourWire, 128)
+		require.Len(t, theirWire, 128)
+
+		ourKey, err := group.keygenHKDFSHA256AES128(new(big.Int).SetBytes(theirWire), ourPrivate)
+		require.NoError(t, err)
+		theirKey, err := group.keygenHKDFSHA256AES128(new(big.Int).SetBytes(ourWire), theirPrivate)
+		require.NoError(t, err)
+		require.Equal(t, ourKey, theirKey)
+	})
+}
+
+func fuzzKeypair(t *testing.T, group *dhGroup, raw []byte) (private, public *big.Int) {
+	t.Helper()
+	private = new(big.Int).Mod(new(big.Int).SetBytes(raw), group.pMinus1)
+	if private.Sign() == 0 {
+		t.Skip("private key must be positive")
+	}
+	public = new(big.Int).Exp(group.g, private, group.p)
+	if public.Cmp(bigOne) <= 0 || public.Cmp(group.pMinus1) >= 0 {
+		t.Skip("degenerate public key")
+	}
+	return private, public
 }
 
 // TestKeygenPadsSharedSecretWithLeadingZero is a regression test for the
