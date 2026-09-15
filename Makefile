@@ -67,6 +67,24 @@ unit-tests:
 		exit $$err; \
 	fi
 
+# Each fuzz target runs for this long. Override with `make fuzz FUZZTIME=5m`.
+FUZZTIME ?= 30s
+
+.PHONY: fuzz
+fuzz: ## Run every Go fuzz target for FUZZTIME each (default 30s)
+	@err=0; found=0; \
+	dirs=$$(grep -rl --include='*_test.go' --exclude-dir=vendor --exclude-dir=.git '^func Fuzz' . | while read -r f; do dirname "$$f"; done | sort -u); \
+	for dir in $$dirs; do \
+		targets=$$(go test -list '^Fuzz' "$$dir") || { err=1; continue; }; \
+		for fn in $$(echo "$$targets" | grep '^Fuzz'); do \
+			found=1; \
+			echo ">>> $$dir $$fn"; \
+			go test -run '^$$' -fuzz "^$$fn\$$" -fuzztime $(FUZZTIME) "$$dir" || err=1; \
+		done; \
+	done; \
+	if [ $$found -eq 0 ]; then echo "ERROR: no fuzz targets found"; exit 1; fi; \
+	exit $$err
+
 keychain-linux-ci-unit-tests:
 	@docker buildx build $(DOCKER_BUILD_ARGS) --target=$(DOCKER_TARGET) --file store/Dockerfile .
 
